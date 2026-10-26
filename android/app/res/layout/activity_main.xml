@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#07080B">
+
+    <!-- 照片的模糊副本，充当整屏背景 -->
+    <ImageView
+        android:id="@+id/backdrop"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:contentDescription="背景" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#B307080B" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:fitsSystemWindows="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingStart="16dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="8dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="VitreLens"
+                        android:textColor="#F2FFFFFF"
+                        android:textSize="18sp"
+                        android:letterSpacing="0.03"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvVer"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:text="v1.0"
+                        android:textColor="#80FFFFFF"
+                        android:textSize="10sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/sizeInfo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="液态玻璃水印"
+                    android:textColor="#99FFFFFF"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/btnPick"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:text="选择"
+                android:textSize="12.5sp"
+                android:textColor="#F0FFFFFF"
+                android:gravity="center"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp"
+                android:background="@drawable/bg_btn" />
+
+            <TextView
+                android:id="@+id/btnExport"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:layout_marginStart="8dp"
+                android:text="导出"
+                android:textSize="12.5sp"
+                android:textColor="#F0FFFFFF"
+                android:gravity="center"
+                android:paddingStart="18dp"
+                android:paddingEnd="18dp"
+                android:background="@drawable/bg_btn" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/stage"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1.05"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
+            android:minHeight="150dp"
+            android:background="@drawable/bg_glass_card"
+            android:clipToOutline="true">
+
+            <ImageView
+                android:id="@+id/preview"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter"
+                android:contentDescription="预览" />
+
+            <TextView
+                android:id="@+id/hint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:text="选择一张照片开始"
+                android:textColor="#8AFFFFFF"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/btnDetail"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_gravity="top|end"
+                android:layout_margin="8dp"
+                android:text="特写"
+                android:textSize="11sp"
+                android:textColor="#E6FFFFFF"
+                android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:background="@drawable/bg_chip" />
+        </FrameLayout>
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:clipToPadding="false"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/controls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingTop="6dp"
+                android:paddingBottom="20dp" />
+        </ScrollView>
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp"
+            android:paddingBottom="8dp"
+            android:textColor="#80FFFFFF"
+            android:textSize="10.5sp"
+            android:maxLines="2"
+            android:ellipsize="end" />
+    </LinearLayout>
+</FrameLayout>

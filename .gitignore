@@ -1,0 +1,29 @@
+# ── 构建产物
+android/build/
+android/VitreLens.apk
+android/*.idsig
+android/build.log
+
+# ── 本地工具链（Android SDK，约 350MB，请自行下载）
+android/sdk/
+
+# ── 签名私钥：绝不入库
+android/debug.keystore
+*.jks
+*.keystore
+
+# ── 参考样张：是用户自己的照片（含 GPS），不随仓库分发
+reference/
+
+# ── 杂项
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# ── Android SDK 的命令行工具（随 SDK 分发，不属于本项目）
+android/tools/cmdline-tools/
+android/tools/cmdline.zip
+
+# ── 助手的工作记录，不公开
+.workbuddy-ai/
