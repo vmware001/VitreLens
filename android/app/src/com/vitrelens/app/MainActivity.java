@@ -100,6 +100,15 @@ public class MainActivity extends Activity {
         }
         composer = new Composer(glass);
 
+        try {
+            WatermarkPainter.initFonts(
+                    getResources().getFont(R.font.inter),
+                    getResources().getFont(R.font.oswald),
+                    getResources().getFont(R.font.playfair),
+                    getResources().getFont(R.font.jetbrainsmono));
+        } catch (Throwable ignored) {
+        }
+
         panel = new ControlPanel(this, style, this::schedulePreview);
         refreshers = panel.build(controls);
 
@@ -352,7 +361,18 @@ public class MainActivity extends Activity {
                 st.append("（没找到视频段）");
             }
         }
-        if (meta != null && meta.hdr) st.append(" · HDR 增益图");
+        if (meta != null) {
+            if (meta.hdr) {
+                st.append(" · ProXDR ✓");
+                if (srcW > 0 && (srcW != photoW || srcH != photoH)) {
+                    st.append("（已缩放，增益图可能对不上）");
+                }
+            } else if (meta.motion) {
+                st.append(" · 无增益图");
+            } else {
+                st.append(" · 无增益图（导出为 8bit JPEG，HDR 无法保留）");
+            }
+        }
         status.setText(st.toString());
         sizeInfo.setText(photoW + "×" + photoH);
         if (refreshers != null) for (Runnable r : refreshers) r.run();

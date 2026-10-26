@@ -155,6 +155,11 @@ class Meta {
             if (xmp.contains("MotionPhoto") || xmp.contains("MicroVideo")) {
                 m.motion = m.trailerLength > 512;
             }
+            // 增益图有两种声明方式：ISO 的 APP2 标记段，或 Google 的 XMP 容器目录。
+            // 只认前者会漏掉一大批机器（例如 OPPO 动态照片），状态栏就会误报"无增益图"。
+            if (!m.hdr && m.xmpText != null && m.xmpText.contains("Semantic=\"GainMap\"")) {
+                m.hdr = true;
+            }
             if (m.motion) {
                 long gain = itemLength(m.xmpText, "GainMap");
                 long video = itemLength(m.xmpText, "MotionPhoto");

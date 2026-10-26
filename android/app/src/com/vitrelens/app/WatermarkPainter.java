@@ -34,6 +34,9 @@ class WatermarkPainter {
         String nameMaterial = "solid"; // liquid / frost / solid
 
         float widthPct = 92f;
+        /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
+        float glassHeightPct = 100f;
+        /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
         float gapPct = 3.8f;
         float nameSize = 28f;          // 每 1000px 画幅
         float metaSize = 10f;
@@ -65,7 +68,7 @@ class WatermarkPainter {
             s.showSubtitle = showSubtitle; s.showBrand = showBrand;
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
-            s.widthPct = widthPct; s.gapPct = gapPct;
+            s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.nameSize = nameSize; s.metaSize = metaSize; s.italic = italic;
             s.ior = ior; s.radiusPct = radiusPct; s.depthPct = depthPct;
             s.thicknessPct = thicknessPct; s.roughPct = roughPct; s.dispPct = dispPct;
@@ -118,9 +121,9 @@ class WatermarkPainter {
             float metaSize = st.metaSize * u * scale;
             float subSize = nameSize * 0.42f;
 
-            Paint pName = stylePaint(nameSize, TRACK_NAME, st.font, true);
-            Paint pMeta = stylePaint(metaSize, TRACK_META, "sans", false);
-            Paint pSub = stylePaint(subSize, TRACK_SUB, st.nameMaterial.equals("solid") ? st.font : "sans", false);
+            Paint pName = stylePaint(nameSize, TRACK_NAME, st.font, true, st.name);
+            Paint pMeta = stylePaint(metaSize, TRACK_META, "sans", false, st.params);
+            Paint pSub = stylePaint(subSize, TRACK_SUB, st.font, false, st.subtitle);
 
             float nameW = pName.measureText(st.name) + (st.italic ? nameSize * 0.09f : 0);
             Paint.FontMetrics fmN = pName.getFontMetrics();
@@ -165,7 +168,8 @@ class WatermarkPainter {
                 continue;
             }
 
-            float panelH = Math.max(Math.max(leftH, rightH), logoW > 0 ? logoH : 0) + L.padY * 2;
+            float contentH = Math.max(Math.max(leftH, rightH), logoW > 0 ? logoH : 0);
+            float panelH = contentH * (st.glassHeightPct / 100f) + L.padY * 2;
             float panelX;
             if ("left".equals(st.align)) panelX = margin;
             else if ("right".equals(st.align)) panelX = W - margin - panelW;
@@ -242,7 +246,7 @@ class WatermarkPainter {
         float u = L.u;
 
         if (st.name.length() > 0) {
-            Paint p = stylePaint(L.nameSize, TRACK_NAME, st.font, true);
+            Paint p = stylePaint(L.nameSize, TRACK_NAME, st.font, true, st.name);
             if ("liquid".equals(st.nameMaterial)) {
                 drawLiquidText(c, st.name, L.nameX, L.nameBaseline, L.nameSize, L.slant, u, st.font);
             } else if ("frost".equals(st.nameMaterial)) {
@@ -258,7 +262,7 @@ class WatermarkPainter {
         }
 
         if (L.subOn) {
-            Paint pSub = stylePaint(L.subSize, TRACK_SUB, st.font, false);
+            Paint pSub = stylePaint(L.subSize, TRACK_SUB, st.font, false, st.subtitle);
             pSub.setColor(0xCCFFFFFF);
             pSub.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f, 0x66000000);
             c.save();
@@ -270,7 +274,7 @@ class WatermarkPainter {
             c.restore();
         }
 
-        Paint pRight = stylePaint(L.metaSize, TRACK_META, "sans", false);
+        Paint pRight = stylePaint(L.metaSize, TRACK_META, "sans", false, st.params);
         pRight.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f, 0x66000000);
         if (L.paramsOn) {
             c.save();
@@ -280,7 +284,7 @@ class WatermarkPainter {
             c.restore();
         }
         if (L.metaOn) {
-            Paint pMeta2 = stylePaint(L.metaSize, TRACK_META, "sans", false);
+            Paint pMeta2 = stylePaint(L.metaSize, TRACK_META, "sans", false, st.meta);
             pMeta2.setColor(0xA6FFFFFF);
             pMeta2.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f, 0x55000000);
             c.save();
@@ -303,7 +307,7 @@ class WatermarkPainter {
         if (slant != 0) c.skew(-slant, 0);
 
         Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        glow.setTypeface(typeface(font, true));
+        glow.setTypeface(typeface(font, true, text));
         glow.setTextSize(size);
         glow.setLetterSpacing(TRACK_NAME);
         glow.setColor(0x40000000);
@@ -311,7 +315,7 @@ class WatermarkPainter {
         c.drawText(text, 0, size * 0.02f, glow);
 
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setTypeface(typeface(font, true));
+        p.setTypeface(typeface(font, true, text));
         p.setTextSize(size);
         p.setLetterSpacing(TRACK_NAME);
         p.setShader(new LinearGradient(0, -size * 0.78f, 0, -size * 0.05f,
@@ -319,14 +323,25 @@ class WatermarkPainter {
                 new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
         c.drawText(text, 0, 0, p);
 
+        // 上缘一道硬高光
         Paint hi = new Paint(Paint.ANTI_ALIAS_FLAG);
-        hi.setTypeface(typeface(font, true));
+        hi.setTypeface(typeface(font, true, text));
         hi.setTextSize(size);
         hi.setLetterSpacing(TRACK_NAME);
         hi.setStyle(Paint.Style.STROKE);
-        hi.setStrokeWidth(Math.max(1f, size * 0.035f));
-        hi.setColor(0x8AFFFFFF);
-        c.drawText(text, 0, -size * 0.012f, hi);
+        hi.setStrokeWidth(Math.max(1f, size * 0.030f));
+        hi.setColor(0xD9FFFFFF);
+        c.drawText(text, 0, -size * 0.016f, hi);
+
+        // 下缘一道淡蓝，模拟玻璃底部的冷色折射
+        Paint lo = new Paint(Paint.ANTI_ALIAS_FLAG);
+        lo.setTypeface(typeface(font, true, text));
+        lo.setTextSize(size);
+        lo.setLetterSpacing(TRACK_NAME);
+        lo.setStyle(Paint.Style.STROKE);
+        lo.setStrokeWidth(Math.max(1f, size * 0.026f));
+        lo.setColor(0x6690C8FF);
+        c.drawText(text, 0, size * 0.014f, lo);
 
         c.restore();
     }
@@ -338,37 +353,72 @@ class WatermarkPainter {
         c.translate(x, baseline);
         if (slant != 0) c.skew(-slant, 0);
 
+        // 磨砂玻璃：明显更"糊"、更半透明，边缘散开
         Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
-        halo.setTypeface(typeface(font, true));
+        halo.setTypeface(typeface(font, true, text));
         halo.setTextSize(size);
         halo.setLetterSpacing(TRACK_NAME);
-        halo.setColor(0x5CFFFFFF);
-        halo.setMaskFilter(new BlurMaskFilter(Math.max(2f, size * 0.10f), BlurMaskFilter.Blur.NORMAL));
+        halo.setColor(0x44FFFFFF);
+        halo.setMaskFilter(new BlurMaskFilter(Math.max(3f, size * 0.22f), BlurMaskFilter.Blur.NORMAL));
+        c.drawText(text, 0, 0, halo);
         c.drawText(text, 0, 0, halo);
 
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setTypeface(typeface(font, true));
+        p.setTypeface(typeface(font, true, text));
         p.setTextSize(size);
         p.setLetterSpacing(TRACK_NAME);
-        p.setColor(0xE0FFFFFF);
-        p.setShadowLayer(Math.max(1f, size * 0.10f), 0, size * 0.02f, 0x77000000);
+        p.setColor(0xA6FFFFFF);
+        p.setMaskFilter(new BlurMaskFilter(Math.max(1f, size * 0.035f), BlurMaskFilter.Blur.NORMAL));
         c.drawText(text, 0, 0, p);
 
         c.restore();
     }
 
-    static Typeface typeface(String font, boolean bold) {
-        String fam;
-        if ("serif".equals(font)) fam = "serif";
-        else if ("mono".equals(font)) fam = "monospace";
-        else if ("condensed".equals(font)) fam = "sans-serif-condensed";
-        else fam = "sans-serif";
-        return Typeface.create(fam, bold ? Typeface.BOLD : Typeface.NORMAL);
+    /** 内置字体（res/font，全部 SIL OFL 1.1），由 MainActivity 启动时注入 */
+    private static Typeface[] bundled;   // sans / condensed / serif / mono
+
+    static void initFonts(Typeface sans, Typeface condensed, Typeface serif, Typeface mono) {
+        bundled = new Typeface[]{sans, condensed, serif, mono};
     }
 
-    private static Paint stylePaint(float size, float tracking, String font, boolean bold) {
+    private static int fontSlot(String font) {
+        if ("serif".equals(font)) return 2;
+        if ("mono".equals(font)) return 3;
+        if ("condensed".equals(font)) return 1;
+        return 0;
+    }
+
+    /** 文本含中日韩字符时退回系统字体（内置字体只有拉丁字形） */
+    private static boolean hasCjk(String t) {
+        if (t == null) return false;
+        for (int i = 0; i < t.length(); i++) {
+            char c = t.charAt(i);
+            if (c >= 0x2E80 && c <= 0x9FFF) return true;
+            if (c >= 0xAC00 && c <= 0xD7AF) return true;
+            if (c >= 0xF900 && c <= 0xFAFF) return true;
+        }
+        return false;
+    }
+
+    private static String sysFamily(String font) {
+        if ("serif".equals(font)) return "serif";
+        if ("mono".equals(font)) return "monospace";
+        if ("condensed".equals(font)) return "sans-serif-condensed";
+        return "sans-serif";
+    }
+
+    static Typeface typeface(String font, boolean bold, String text) {
+        if (hasCjk(text) || bundled == null) {
+            return Typeface.create(sysFamily(font), bold ? Typeface.BOLD : Typeface.NORMAL);
+        }
+        Typeface base = bundled[fontSlot(font)];
+        if (base == null) return Typeface.create(sysFamily(font), bold ? Typeface.BOLD : Typeface.NORMAL);
+        return Typeface.create(base, bold ? Typeface.BOLD : Typeface.NORMAL);
+    }
+
+    private static Paint stylePaint(float size, float tracking, String font, boolean bold, String text) {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
-        p.setTypeface(typeface(font, bold));
+        p.setTypeface(typeface(font, bold, text));
         p.setTextSize(size);
         p.setLetterSpacing(tracking);
         p.setColor(0xFFFFFFFF);

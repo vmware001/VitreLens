@@ -74,6 +74,8 @@ class ControlPanel {
                 () -> alignIndex(st.align));
 
         slider(c2, "水印宽度", 50, 100, 1, () -> st.widthPct, v -> st.widthPct = v, p -> (int) p + "%");
+        slider(c2, "玻璃高度", 100, 300, 1, () -> st.glassHeightPct, v -> st.glassHeightPct = v,
+                p -> Math.round(p) + "%");
         slider(c2, "距底高度", 0, 12, 0.1f, () -> st.gapPct, v -> st.gapPct = v,
                 p -> String.format(Locale.US, "%.1f%%", p));
         slider(c2, "机型字号", 14, 48, 0.5f, () -> st.nameSize, v -> st.nameSize = v,
@@ -87,7 +89,7 @@ class ControlPanel {
                 v -> st.font = new String[]{"sans", "condensed", "serif", "mono"}[v],
                 () -> fontIndex(st.font));
 
-        label(c2, "机型材质");
+        label(c2, "文字材质");
         segmented(c2, new String[]{"液态玻璃", "磨砂玻璃", "不透明"},
                 () -> matIndex(st.nameMaterial),
                 v -> st.nameMaterial = new String[]{"liquid", "frost", "solid"}[v],
@@ -103,6 +105,9 @@ class ControlPanel {
         segmented(c3, new String[]{"清透", "磨砂", "厚玻璃"},
                 () -> -1, v -> applyPreset(v), () -> -1);
         hint(c3, "预设会覆盖下面所有玻璃参数，可再单独微调");
+
+        label(c3, "我的预设");
+        presetRow(c3);
 
         slider(c3, "玻璃折射率", 1.00f, 2.00f, 0.01f, () -> st.ior, v -> st.ior = v,
                 p -> String.format(Locale.US, "%.2f", p));
@@ -168,6 +173,90 @@ class ControlPanel {
         st.shadowPct = v[8];
         refreshAll();
         onChange.run();
+    }
+
+    /* ── 我的预设（最多 3 个，存 SharedPreferences） ── */
+
+    private static final String[] P_KEYS = {"p1", "p2", "p3"};
+
+    private void presetRow(LinearLayout parent) {
+        final android.content.SharedPreferences sp =
+                act.getSharedPreferences("vl_presets", android.content.Context.MODE_PRIVATE);
+        LinearLayout row = new LinearLayout(act);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(4), 0, dp(2));
+        final TextView[] chips = new TextView[3];
+
+        final Runnable sync = () -> {
+            for (int i = 0; i < 3; i++) {
+                boolean has = sp.contains(P_KEYS[i]);
+                chips[i].setText(has ? "预设 " + (i + 1) : "空 " + (i + 1));
+                chips[i].setSelected(has);
+            }
+        };
+
+        for (int i = 0; i < 3; i++) {
+            final int idx = i;
+            TextView c = chip("");
+            c.setOnClickListener(v -> {
+                String saved = sp.getString(P_KEYS[idx], null);
+                if (saved == null) {
+                    sp.edit().putString(P_KEYS[idx], serialize()).apply();
+                    toastShort("已保存为预设 " + (idx + 1));
+                } else {
+                    deserialize(saved);
+                    refreshAll();
+                    onChange.run();
+                }
+                sync.run();
+            });
+            c.setOnLongClickListener(v -> {
+                sp.edit().putString(P_KEYS[idx], serialize()).apply();
+                toastShort("已覆盖预设 " + (idx + 1));
+                sync.run();
+                return true;
+            });
+            chips[i] = c;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1);
+            if (i > 0) lp.leftMargin = dp(6);
+            row.addView(c, lp);
+        }
+        parent.addView(row, matchWrap());
+        hint(parent, "点击套用；空槽点击保存当前设置；长按覆盖");
+        sync.run();
+        refreshers.add(sync);
+    }
+
+    private void toastShort(String s) {
+        android.widget.Toast.makeText(act, s, android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    /** 只序列化玻璃参数，这才是"液态玻璃预设"该记的东西 */
+    private String serialize() {
+        return st.ior + "|" + st.radiusPct + "|" + st.depthPct + "|" + st.thicknessPct + "|"
+                + st.roughPct + "|" + st.dispPct + "|" + st.reflPct + "|" + st.transPct + "|"
+                + st.glossPct + "|" + st.shadowPct + "|" + st.whitePct + "|"
+                + (st.tintOn ? 1 : 0) + "|" + st.segments;
+    }
+
+    private void deserialize(String v) {
+        try {
+            String[] a = v.split("\\|");
+            st.ior = Float.parseFloat(a[0]);
+            st.radiusPct = Float.parseFloat(a[1]);
+            st.depthPct = Float.parseFloat(a[2]);
+            st.thicknessPct = Float.parseFloat(a[3]);
+            st.roughPct = Float.parseFloat(a[4]);
+            st.dispPct = Float.parseFloat(a[5]);
+            st.reflPct = Float.parseFloat(a[6]);
+            st.transPct = Float.parseFloat(a[7]);
+            st.glossPct = Float.parseFloat(a[8]);
+            st.shadowPct = Float.parseFloat(a[9]);
+            st.whitePct = Float.parseFloat(a[10]);
+            st.tintOn = "1".equals(a[11]);
+            st.segments = Integer.parseInt(a[12]);
+        } catch (Throwable ignored) {
+        }
     }
 
     /* ── 白值曲线 ── */

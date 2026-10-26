@@ -59,7 +59,22 @@ transmission / reflectivity / ior / dispersion / thickness`）与整体思路
 
 > 该 bundle 是预编译产物，建议后续在仓库里注明其来源与版本号，便于复现。
 
-## 3. 构建期工具（不随 APK 分发）
+## 3. 随 APK 分发的字体（SIL Open Font License 1.1）
+
+`android/app/res/font/` 内置四款字体，许可原文在 `android/licenses/fonts/`：
+
+| 文件 | 字体 | 许可 |
+| --- | --- | --- |
+| `inter.ttf` | Inter | SIL OFL 1.1 |
+| `oswald.ttf` | Oswald | SIL OFL 1.1 |
+| `playfair.ttf` | Playfair Display | SIL OFL 1.1 |
+| `jetbrainsmono.ttf` | JetBrains Mono | SIL OFL 1.1 |
+
+OFL 1.1 与 GPLv3 兼容，可随本项目一起分发。字体仅用于渲染水印文字，未修改字形。
+
+> 内置字体只有拉丁字形；文本含中日韩字符时会自动退回系统字体，避免出现豆腐块。
+
+## 4. 构建期工具（不随 APK 分发）
 
 | 工具 | 许可 | 用途 |
 | --- | --- | --- |
@@ -69,7 +84,7 @@ transmission / reflectivity / ior / dispersion / thickness`）与整体思路
 
 APK 内**不含**任何第三方库：`classes.dex` 只有本项目自己的类，也没有 native `.so`。
 
-## 4. 商标
+## 5. 商标
 
 `WatermarkPainter.drawLogo()` 用矢量绘制了 Leica、Hasselblad、ZEISS、RICOH 的品牌标识。
 这些是各自公司的**注册商标**，此处仅用于在个人照片上标注拍摄器材。
