@@ -1,5 +1,6 @@
 package com.vitrelens.app;
 
+import android.graphics.Bitmap;
 import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -294,7 +295,7 @@ class WatermarkPainter {
             c.restore();
         }
 
-        if (L.logoOn) drawLogo(c, st.brand, L.logoX, L.logoY, L.logoH);
+        if (L.logoOn) drawLogo(c, st.brand, L.logoX, L.logoY, L.logoH, st.nameMaterial);
     }
 
     /* ── 机型名的三种材质 ── */
@@ -425,7 +426,111 @@ class WatermarkPainter {
         return p;
     }
 
+    /** 本地品牌图标（可选）。为空或 1×1 时回退到内置矢量绘制 */
+    private static Bitmap[] logoBmps;
+    private static float[] logoAspect = {1f, 1f, 1f, 1f};
+
+    static void initLogos(Bitmap[] bmps) {
+        logoBmps = bmps;
+        for (int i = 0; i < 4 && i < bmps.length; i++) {
+            Bitmap b = bmps[i];
+            if (b != null && b.getWidth() > 1 && b.getHeight() > 0) {
+                Bitmap t = trimAlpha(b);
+                if (t != null) logoBmps[i] = t;
+                logoAspect[i] = logoBmps[i].getWidth() / (float) logoBmps[i].getHeight();
+            }
+        }
+    }
+
+    /** 裁掉四周全透明的空白：各品牌图标的留白比例差别很大，不裁的话大小完全不统一 */
+    private static Bitmap trimAlpha(Bitmap src) {
+        int w = src.getWidth(), h = src.getHeight();
+        int x0 = w, y0 = h, x1 = -1, y1 = -1;
+        int[] row = new int[w];
+        for (int y = 0; y < h; y++) {
+            src.getPixels(row, 0, w, 0, y, w, 1);
+            for (int x = 0; x < w; x++) {
+                if ((row[x] >>> 24) > 8) {
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                    if (y < y0) y0 = y;
+                    if (y > y1) y1 = y;
+                }
+            }
+        }
+        if (x1 < x0 || y1 < y0) return null;
+        if (x0 == 0 && y0 == 0 && x1 == w - 1 && y1 == h - 1) return null;
+        try {
+            return Bitmap.createBitmap(src, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Bitmap logoBitmap(int brand) {
+        if (logoBmps == null) return null;
+        int i = brand - 1;
+        if (i < 0 || i >= logoBmps.length) return null;
+        Bitmap b = logoBmps[i];
+        return (b != null && b.getWidth() > 1) ? b : null;
+    }
+
     private static float logoWidth(int brand, float h) {
+        Bitmap b = logoBitmap(brand);
+        if (b != null) {
+            float asp = logoAspect[brand - 1];
+            float w = Math.min(h * 2.2f, h * asp);
+            return w;
+        }
+        return vectorLogoWidth(brand, h);
+    }
+
+    /**
+     * 用位图的 alpha 当蒙版、统一染成白色，并跟随「文字材质」：
+     * 原图里的品牌色（徕卡红、蔡司蓝）直接贴到照片上会花，所以只取形状。
+     */
+    private static void drawLogoBitmap(Canvas c, Bitmap b, float x, float y,
+                                       float w, float hh, String material) {
+        RectF dst = new RectF(x, y, x + w, y + hh);
+        float u = Math.max(0.6f, hh / 26f);   // 相对图标高度的一个小单位
+
+        if ("frost".equals(material)) {
+            // 磨砂：半透明 + 用几层放大的低透明副本模拟柔光
+            Paint glow = tint(0x33FFFFFF);
+            for (float s = 1.10f; s > 1.001f; s -= 0.035f) {
+                float dw = w * (s - 1) / 2f, dh = hh * (s - 1) / 2f;
+                c.drawBitmap(b, null,
+                        new RectF(dst.left - dw, dst.top - dh, dst.right + dw, dst.bottom + dh), glow);
+            }
+            c.drawBitmap(b, null, dst, tint(0xA6FFFFFF));
+            return;
+        }
+
+        if ("liquid".equals(material)) {
+            // 液态玻璃：下缘冷色 + 主体渐变白 + 上缘硬高光
+            c.drawBitmap(b, null, offset(dst, 0, u * 1.1f), tint(0x6690C8FF));
+            c.drawBitmap(b, null, dst, tint(0xF2FFFFFF));
+            c.drawBitmap(b, null, offset(dst, 0, -u * 1.2f), tint(0xD9FFFFFF));
+            return;
+        }
+
+        c.drawBitmap(b, null, offset(dst, 0, u * 0.9f), tint(0x55000000));
+        c.drawBitmap(b, null, dst, tint(0xFFFFFFFF));
+    }
+
+    private static RectF offset(RectF r, float dx, float dy) {
+        return new RectF(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy);
+    }
+
+    /** 只保留位图 alpha，颜色换成指定色 */
+    private static Paint tint(int color) {
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        p.setColorFilter(new android.graphics.PorterDuffColorFilter(color,
+                android.graphics.PorterDuff.Mode.SRC_IN));
+        return p;
+    }
+
+    private static float vectorLogoWidth(int brand, float h) {
         switch (brand) {
             case 1: return h * 1.02f;
             case 2: return h * 0.80f;
@@ -435,7 +540,16 @@ class WatermarkPainter {
         }
     }
 
-    private static void drawLogo(Canvas c, int brand, float x, float y, float h) {
+    private static void drawLogo(Canvas c, int brand, float x, float y, float h, String material) {
+        Bitmap b = logoBitmap(brand);
+        if (b != null) {
+            float asp = logoAspect[brand - 1];
+            float w = Math.min(h * 2.2f, h * asp);
+            float hh = w / asp;
+            float top = y + (h - hh) / 2f;
+            drawLogoBitmap(c, b, x, top, w, hh, material);
+            return;
+        }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         switch (brand) {
             case 1: {

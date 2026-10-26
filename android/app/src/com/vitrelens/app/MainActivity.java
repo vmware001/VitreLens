@@ -109,6 +109,28 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {
         }
 
+        try {
+            int[] ids = {R.drawable.logo_leica, R.drawable.logo_hasselblad,
+                    R.drawable.logo_zeiss, R.drawable.logo_ricoh};
+            Bitmap[] bmps = new Bitmap[4];
+            for (int i = 0; i < 4; i++) {
+                bmps[i] = android.graphics.BitmapFactory.decodeResource(getResources(), ids[i]);
+            }
+            WatermarkPainter.initLogos(bmps);
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            int[] ids = {R.drawable.logo_leica, R.drawable.logo_hasselblad,
+                    R.drawable.logo_zeiss, R.drawable.logo_ricoh};
+            Bitmap[] bmps = new Bitmap[4];
+            for (int i = 0; i < 4; i++) {
+                bmps[i] = android.graphics.BitmapFactory.decodeResource(getResources(), ids[i]);
+            }
+            WatermarkPainter.initLogos(bmps);
+        } catch (Throwable ignored) {
+        }
+
         panel = new ControlPanel(this, style, this::schedulePreview);
         refreshers = panel.build(controls);
 

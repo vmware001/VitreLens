@@ -47,6 +47,29 @@ mkdir -p build/test
   > build/test.log 2>&1 || { tail -30 build/test.log; echo "!! 单元测试失败"; exit 1; }
 tail -3 build/test.log
 
+echo "== 0.5/6 同步本地品牌图标 =="
+mkdir -p app/res/drawable-nodpi
+for n in leica hasselblad zeiss ricoh; do
+  if [ -f "local-logos/$n.png" ]; then
+    cp "local-logos/$n.png" "app/res/drawable-nodpi/logo_$n.png"
+    echo "  使用本地图标 logo_$n.png"
+  elif [ ! -f "app/res/drawable-nodpi/logo_$n.png" ]; then
+    "$PYBIN0" - "$n" <<'PLACEHOLDER'
+import sys, zlib, struct
+def chunk(t, d):
+    c = t + d
+    return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+raw = b'\x00' + b'\x00\x00\x00\x00'
+png = (b'\x89PNG\r\n\x1a\n'
+       + chunk(b'IHDR', struct.pack('>IIBBBBB', 1, 1, 8, 6, 0, 0, 0))
+       + chunk(b'IDAT', zlib.compress(raw))
+       + chunk(b'IEND', b''))
+open('app/res/drawable-nodpi/logo_%s.png' % sys.argv[1], 'wb').write(png)
+PLACEHOLDER
+    echo "  无本地图标 logo_$n.png，用矢量回退"
+  fi
+done
+
 echo "== 1/6 aapt2 compile =="
 "$BT/aapt2.exe" compile --dir app/res -o build/res.zip
 

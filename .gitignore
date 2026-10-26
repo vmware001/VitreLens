@@ -27,3 +27,8 @@ android/tools/cmdline.zip
 
 # ── 助手的工作记录，不公开
 .workbuddy-ai/
+
+# ── 本地品牌图标（商标，仅自用，不公开）
+android/local-logos/*
+!android/local-logos/README.md
+android/app/res/drawable-nodpi/logo_*.png

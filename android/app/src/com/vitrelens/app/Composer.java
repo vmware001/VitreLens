@@ -46,32 +46,37 @@ class Composer {
 
                 int padL = (i > 0) ? Math.min(pad, Math.max(0, ox - sx)) : 0;
                 int padR = (i < cols - 1) ? Math.min(pad, Math.max(0, sx + sw - (ox + ow))) : 0;
-                int cx = ox - padL;
-                int cw = ow + padL + padR;
-                if (cw <= 0 || cw > W || sh <= 0) continue;
+                // 渲染块四周各多留 1 像素：GL 回读出来的第一列/第一行不可靠
+                // （实测首列是近黑色），多留一圈、画回时只用内部区域就能绕开。
+                final int m = 1;
+                int innerX = ox - padL;
+                int innerW = ow + padL + padR;
+                int cx = Math.max(0, innerX - m);
+                int cy = Math.max(0, sy - m);
+                int cw = Math.min(W - cx, innerW + 2 * m);
+                int ch = Math.min(H - cy, sh + 2 * m);
+                if (innerW <= 0 || sh <= 0 || cw <= 2 || ch <= 2) continue;
 
-                Bitmap crop = Bitmap.createBitmap(base, cx, sy, cw, sh);
+                Bitmap crop = Bitmap.createBitmap(base, cx, cy, cw, ch);
                 Bitmap g;
                 try {
                     WatermarkPainter.Panel p = new WatermarkPainter.Panel();
                     p.x = panel.x - cx;
-                    p.y = panel.y - sy;
+                    p.y = panel.y - cy;
                     p.w = panel.w;
                     p.h = panel.h;
                     p.r = panel.r;
                     p.bevel = panel.bevel;
                     p.edgeW = panel.edgeW;
-                    g = glass.render(crop, cx, sy, W, H, p, st);
+                    g = glass.render(crop, cx, cy, W, H, p, st);
                 } finally {
                     crop.recycle();
                 }
-                if (padL == 0 && padR == 0) {
-                    c.drawBitmap(g, ox, sy, null);
-                } else {
-                    c.drawBitmap(g,
-                            new Rect(padL, 0, padL + ow, sh),
-                            new Rect(ox, sy, ox + ow, sy + sh), null);
-                }
+                int srcX = innerX - cx;
+                int srcY = sy - cy;
+                c.drawBitmap(g,
+                        new Rect(srcX, srcY, srcX + innerW, srcY + sh),
+                        new Rect(innerX, sy, innerX + innerW, sy + sh), null);
                 g.recycle();
             }
         }
