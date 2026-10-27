@@ -27,6 +27,8 @@ class Meta {
     long[] mpfSizes = new long[0];
 
     long eoiEnd;          // 原文件中 EOI 之后的位置
+    /** 尾部数据的绝对起点：JPEG 是 EOI 之后，HEIC 是最后一个 box 之后 */
+    long trailerStart;
     long trailerLength;   // 尾部长度
     boolean motion;
     boolean hdr;
@@ -141,7 +143,22 @@ class Meta {
         }
         m.eoiEnd = pos;
 
+        m.trailerStart = m.eoiEnd;
         if (fileLen > 0) m.trailerLength = Math.max(0, fileLen - m.eoiEnd);
+        // OPPO 的 HDR 尾块是自描述的：开头 4 字节（大端）就等于它自己的长度。
+        // 用这个特征判断，比找标记段可靠（这种尾块不带 MPF、也不带 XMP）。
+        if (m.trailerLength >= 8) {
+            try {
+                byte[] b4 = new byte[4];
+                int n = in.read(b4, 0, 4);
+                if (n == 4) {
+                    long v = ((b4[0] & 0xFFL) << 24) | ((b4[1] & 0xFFL) << 16)
+                            | ((b4[2] & 0xFFL) << 8) | (b4[3] & 0xFFL);
+                    if (v == m.trailerLength) m.hdr = true;
+                }
+            } catch (Exception ignored) {
+            }
+        }
 
         if (xmpBytes != null) {
             String xmp = new String(xmpBytes, "UTF-8");
@@ -266,6 +283,33 @@ class Meta {
     }
 
     /** 只取 HEIC 的 EXIF，并转成一个能写进 JPEG 的 APP1 段 */
+    /**
+     * HEIC 末尾的私有尾块起点。OPPO 把 HDR 增益图放在最后一个 box 之后，
+     * 结构是 [4B 长度][4B 增益上限][头部][内嵌 JPEG 增益图]。
+     * 判断依据：box 类型必须是 4 个可打印 ASCII，否则就是尾块。
+     */
+    static long heifTrailerStart(byte[] f) {
+        int o = 0;
+        int end = f.length;
+        while (o + 8 <= end) {
+            long sz = readInt(f, o, false) & 0xFFFFFFFFL;
+            if (sz == 1) {
+                if (o + 16 > end) break;
+                sz = ((long) readInt(f, o + 8, false) << 32)
+                        | (readInt(f, o + 12, false) & 0xFFFFFFFFL);
+            }
+            if (sz < 8 || o + sz > end) break;
+            boolean printable = true;
+            for (int i = 4; i < 8; i++) {
+                int c = f[o + i] & 0xFF;
+                if (c < 0x20 || c > 0x7E) { printable = false; break; }
+            }
+            if (!printable) break;
+            o += (int) sz;
+        }
+        return (o > 0 && o < end) ? o : 0;
+    }
+
     static Meta parseHeif(byte[] f) {
         Meta m = new Meta();
         try {
@@ -308,6 +352,14 @@ class Meta {
                 }
             }
         } catch (Exception ignored) { }
+        // 最后一个 box 之后若还有数据，那是 OPPO 的 HDR 私有尾块（增益图），
+        // 必须原样搬到导出的 JPEG 里，否则相册的 ProXDR 就没了。
+        long ts = heifTrailerStart(f);
+        if (ts > 0) {
+            m.trailerStart = ts;
+            m.trailerLength = f.length - ts;
+            m.hdr = true;
+        }
         return m;
     }
 
@@ -659,7 +711,7 @@ class Meta {
         // ── 尾部（增益图 + 动态照片视频），原样流式拷贝
         if (orig != null && trailerLength > 0) {
             BufferedInputStream bi = new BufferedInputStream(orig, 1 << 16);
-            long skip = eoiEnd;
+            long skip = this.trailerStart > 0 ? this.trailerStart : eoiEnd;
             while (skip > 0) {
                 long n = bi.skip(skip);
                 if (n <= 0) {

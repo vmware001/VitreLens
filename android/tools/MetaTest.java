@@ -368,17 +368,43 @@ public class MetaTest {
         }
         chk(iccSeg, "ICC 段字节与原 HEIC 的 colr 完全一致");
 
+        // OPPO 把 HDR 增益图放在最后一个 box 之后的私有尾块里，必须被识别并搬运
+        chk(m.trailerStart > 0, "识别出 HDR 尾块起点 " + m.trailerStart);
+        chk(m.trailerLength > 0, "尾块长度 " + m.trailerLength);
+        chk(m.trailerStart + m.trailerLength == all.length, "尾块一直延伸到文件末尾");
+        chk(m.hdr, "HEIC 带 HDR 尾块 → hdr 标记为 true");
+
+        int soi = -1;
+        for (int k = (int) m.trailerStart; k + 3 < all.length; k++) {
+            if ((all[k] & 0xFF) == 0xFF && (all[k + 1] & 0xFF) == 0xD8 && (all[k + 2] & 0xFF) == 0xFF) {
+                soi = k;
+                break;
+            }
+        }
+        chk(soi > 0, "尾块里找到内嵌增益图 JPEG，偏移 " + (soi - m.trailerStart));
+
         // 走一遍 assemble：HEIC 没有尾部，不能把整个 HEIC 当成 trailer 拼进去
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         InputStream orig = new ByteArrayInputStream(all);
         try { m.assemble(bos, fakeReencoded(3000, false), orig, true, null, 0); } finally { orig.close(); }
         byte[] out = bos.toByteArray();
-        chk(out.length < 64 * 1024, "没把 12MB 的 HEIC 原文件当成 trailer 拼进去（输出 " + out.length + " 字节）");
+        // 现在会主动搬运 HEIC 的 HDR 尾块（而不是把整个 HEIC 当 trailer），
+        // 所以输出长度 = 新主图 + 尾块，且尾块必须逐字节一致
+        long expect = out.length - m.trailerLength;
+        chk(expect > 0 && expect < 64 * 1024, "主图部分只有 " + expect + " 字节（没把整个 HEIC 拼进去）");
+        byte[] tailOut = new byte[(int) m.trailerLength];
+        System.arraycopy(out, out.length - tailOut.length, tailOut, 0, tailOut.length);
+        byte[] tailSrc = new byte[(int) m.trailerLength];
+        System.arraycopy(all, (int) m.trailerStart, tailSrc, 0, tailSrc.length);
+        chk(java.util.Arrays.equals(tailOut, tailSrc),
+                "HDR 尾块 " + tailSrc.length + " 字节逐字节原样搬过去");
         List<int[]> segs = scan(out);
         chk(segs.size() > 0 && segs.get(0)[0] == 0xE1, "首段是 EXIF APP1");
         Meta back;
         InputStream bi = new ByteArrayInputStream(out);
         try { back = Meta.parse(bi, out.length); } finally { bi.close(); }
         chk(back.model.equals(m.model), "回读机型一致：" + back.model);
+        chk(back.hdr && back.trailerLength == m.trailerLength,
+                "回读仍识别为带 HDR 尾块（" + back.trailerLength + " 字节）");
     }
 }

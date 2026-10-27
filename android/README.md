@@ -174,6 +174,25 @@ dPhoto.y = clamp(dPhoto.y, -photoUv.y * 0.9, (1.0 - photoUv.y) * 0.9);
 之前 HEIC 这条是漏的，导出只能用编码器生成的替代 profile（520/536 字节），
 和原厂的 548 字节 `Display P3` 不是同一份。现在字节完全一致（有单测校验）。
 
+## OPPO 的 HDR 增益图藏在哪（实测）
+
+`reference/` 里那张「相册 → 转换为兼容格式」产出的 JPEG 揭示了一切：
+
+**HEIC 的增益图不在 HEIF 的 item 里，而在最后一个 box 之后的私有尾块**：
+
+```
+[4B 长度][4B float 1.2（增益上限）][头部：机型名等，补齐到 4384 字节]
+[内嵌 JPEG 3072×4096 —— 增益图本体，约 3.5MB]
+```
+
+- 尾块**自描述**：开头 4 字节（大端）就等于自身长度
+- 相册转 JPEG 时把它**原样搬到 EOI 之后**，不加 MPF、也不加 XMP
+- 早期版本只从 HEIF 取 EXIF，把这 3.5MB 整个丢了 → ProXDR 消失
+
+现在 `Meta.heifTrailerStart()` 会沿着 box 链走，**遇到类型不是可打印 ASCII 的 box 就停**（那就是尾块），
+记录 `trailerStart`/`trailerLength`，`assemble` 原样搬运。JPEG 侧也用"自描述长度"识别这类尾块，
+比找标记段可靠。
+
 ## 实况照片的取景差异（实测）
 
 用二维配准把原图的静态帧和视频首帧对齐，得到（`dynamic_photo.jpg`）：
