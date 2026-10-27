@@ -40,6 +40,9 @@ public class MainActivity extends Activity {
     private ImageView preview, backdrop;
     private TextView hint, status, sizeInfo, btnPick, btnExport, btnDetail;
     private boolean detailMode;
+    private float closeUpPan = 0.5f;
+    private Bitmap lastComposed;
+    private float lastTouchX;
     private LinearLayout controls;
 
     private Uri srcUri;
@@ -78,7 +81,31 @@ public class MainActivity extends Activity {
             detailMode = !detailMode;
             btnDetail.setSelected(detailMode);
             btnDetail.setText(detailMode ? "全图" : "特写");
-            schedulePreview();
+            if (detailMode && lastComposed != null) {
+                updateCloseUp();
+            } else {
+                schedulePreview();
+            }
+        });
+
+        // 特写模式下左右拖动可以平移到水印的任意位置
+        preview.setOnTouchListener((v, e) -> {
+            if (!detailMode) return false;
+            switch (e.getActionMasked()) {
+                case android.view.MotionEvent.ACTION_DOWN:
+                    lastTouchX = e.getX();
+                    return true;
+                case android.view.MotionEvent.ACTION_MOVE: {
+                    float dx = e.getX() - lastTouchX;
+                    lastTouchX = e.getX();
+                    float span = Math.max(1f, v.getWidth() * 0.7f);
+                    closeUpPan = Math.max(0f, Math.min(1f, closeUpPan - dx / span));
+                    updateCloseUp();
+                    return true;
+                }
+                default:
+                    return true;
+            }
         });
         controls = findViewById(R.id.controls);
         btnExport.setEnabled(false);
@@ -442,6 +469,7 @@ public class MainActivity extends Activity {
                 Bitmap work = base.copy(Bitmap.Config.ARGB_8888, true);
                 if (work == null) return;
                 Bitmap out = composer.composeOn(work, work.getWidth(), work.getHeight(), st);
+                lastComposed = out;
                 final Bitmap show = detailMode ? closeUp(out, st) : out;
                 ui.post(() -> {
                     if (seq != previewSeq) return;
@@ -452,7 +480,15 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** 特写：把水印那一块裁出来放大，方便看玻璃细节 */
+    private void updateCloseUp() {
+        if (!detailMode || lastComposed == null) return;
+        try {
+            preview.setImageBitmap(closeUp(lastComposed, style));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 特写：把水印那一块裁出来放大，可用 closeUpPan 左右平移 */
     private Bitmap closeUp(Bitmap full, WatermarkPainter.Style st) {
         int W = full.getWidth(), H = full.getHeight();
         WatermarkPainter.Layout L = WatermarkPainter.layout(W, H, st);
@@ -461,10 +497,13 @@ public class MainActivity extends Activity {
         int top = Math.max(0, Math.round(L.panel.y) - pad);
         int bottom = Math.min(H, Math.round(L.panel.y + L.panel.h) + pad);
         int cw = Math.round(L.panel.w * 0.62f);
-        int cx = Math.max(0, Math.min(W - cw, Math.round(L.panel.x - 20 * u)));
+        if (cw > W) cw = W;
+        int minX = Math.max(0, Math.round(L.panel.x - 20 * u));
+        int maxX = Math.max(minX, Math.min(W - cw, Math.round(L.panel.x + L.panel.w - cw + 20 * u)));
+        int cx = Math.round(minX + (maxX - minX) * closeUpPan);
         if (cw < 8 || bottom - top < 8) return full;
         try {
-            return Bitmap.createBitmap(full, cx, top, cw, bottom - top);
+            return Bitmap.createBitmap(full, Math.max(0, Math.min(W - cw, cx)), top, cw, bottom - top);
         } catch (Throwable t) {
             return full;
         }
@@ -522,8 +561,9 @@ public class MainActivity extends Activity {
                 outUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
                 if (outUri == null) throw new RuntimeException("无法创建相册文件");
 
-                OutputStream os = getContentResolver().openOutputStream(outUri);
-                if (os == null) throw new RuntimeException("无法写入相册");
+                OutputStream rawOs = getContentResolver().openOutputStream(outUri);
+                if (rawOs == null) throw new RuntimeException("无法写入相册");
+                final CountingStream os = new CountingStream(rawOs);
 
                 if (meta != null && (meta.motion || !meta.segs.isEmpty())) {
                     InputStream trailer = getContentResolver().openInputStream(srcUri);
@@ -537,6 +577,24 @@ public class MainActivity extends Activity {
                 }
                 os.flush();
                 os.close();
+                // ── 导出后自检：把刚写出的文件重新解析一遍，确认增益图还在
+                String hdrNote = null;
+                try {
+                    InputStream chk = getContentResolver().openInputStream(outUri);
+                    if (chk != null) {
+                        Meta om = Meta.parse(chk, os.count);
+                        chk.close();
+                        boolean srcHdr = meta != null && meta.hdr;
+                        if (srcHdr) {
+                            hdrNote = om.hdr ? "ProXDR ✓ 已保留" : "⚠ 增益图丢失";
+                        } else {
+                            hdrNote = "源图无增益图";
+                        }
+                    }
+                } catch (Throwable t) {
+                    Log.w("VitreLens", "导出自检失败", t);
+                }
+
                 final boolean hadVideo = newVideo != null;
                 if (newVideo != null) { newVideo.delete(); newVideo = null; }
 
@@ -544,23 +602,26 @@ public class MainActivity extends Activity {
                 done.put(MediaStore.Images.Media.IS_PENDING, 0);
                 getContentResolver().update(outUri, done, null, null);
 
-                final String msg;
+                String msg;
                 if (videoWarn != null) msg = videoWarn;
                 else if (hadVideo) msg = "已导出：照片 + 视频都带水印";
                 else if (meta != null && meta.motion) msg = "已导出（视频未加水印）";
                 else msg = "已导出 → 相册 Pictures/VitreLens";
+                if (hdrNote != null) msg = msg + "\n" + hdrNote;
+                Log.i("VitreLens", "导出自检: " + hdrNote + "（源图 hdr=" + (meta != null && meta.hdr) + "）");
+                final String outMsg = msg;
                 final boolean warn = videoWarn != null;
                 ui.post(() -> {
                     pd.dismiss();
                     if (warn) {
                         new AlertDialog.Builder(this)
                                 .setTitle("视频没加上水印")
-                                .setMessage("照片已导出到相册 Pictures/VitreLens。\n\n原因：" + msg
+                                .setMessage("照片已导出到相册 Pictures/VitreLens。\n\n原因：" + outMsg
                                         + "\n\n视频部分保持原样，没有改动。")
                                 .setPositiveButton("好", null)
                                 .show();
                     } else {
-                        toast(msg);
+                        toast(outMsg);
                     }
                 });
             } catch (Throwable e) {
@@ -636,6 +697,25 @@ public class MainActivity extends Activity {
                 pd.setMessage(msg);
             } catch (Exception ignored) { }
         });
+    }
+
+    /** 统计写入字节数，供导出后自检用 */
+    private static class CountingStream extends java.io.FilterOutputStream {
+        long count;
+
+        CountingStream(OutputStream out) {
+            super(out);
+        }
+
+        @Override public void write(int b) throws java.io.IOException {
+            out.write(b);
+            count++;
+        }
+
+        @Override public void write(byte[] b, int off, int len) throws java.io.IOException {
+            out.write(b, off, len);
+            count += len;
+        }
     }
 
     private void toast(String s) {

@@ -115,7 +115,8 @@ class ControlPanel {
         slider(c3, "深度", 0, 100, 1, () -> st.depthPct, v -> st.depthPct = v, p -> Math.round(p) + "%");
         slider(c3, "厚度", 0, 100, 1, () -> st.thicknessPct, v -> st.thicknessPct = v, p -> Math.round(p) + "%");
         slider(c3, "粗糙度", 0, 100, 1, () -> st.roughPct, v -> st.roughPct = v, p -> Math.round(p) + "%");
-        slider(c3, "色散", 0, 100, 1, () -> st.dispPct, v -> st.dispPct = v, p -> Math.round(p) + "%");
+        slider(c3, "色散", 0, 200, 1, () -> st.dispPct, v -> st.dispPct = v, p -> Math.round(p) + "%");
+        slider(c3, "横向扭曲", 0, 200, 1, () -> st.warpPct, v -> st.warpPct = v, p -> Math.round(p) + "%");
         slider(c3, "反射率", 0, 100, 1, () -> st.reflPct, v -> st.reflPct = v, p -> Math.round(p) + "%");
         slider(c3, "透射率", 0, 100, 1, () -> st.transPct, v -> st.transPct = v, p -> Math.round(p) + "%");
         slider(c3, "高光", 0, 150, 1, () -> st.glossPct, v -> st.glossPct = v, p -> Math.round(p) + "%");
@@ -178,6 +179,7 @@ class ControlPanel {
     /* ── 我的预设（最多 3 个，存 SharedPreferences） ── */
 
     private static final String[] P_KEYS = {"p1", "p2", "p3"};
+    private int activePreset = -1;
 
     private void presetRow(LinearLayout parent) {
         final android.content.SharedPreferences sp =
@@ -191,7 +193,8 @@ class ControlPanel {
             for (int i = 0; i < 3; i++) {
                 boolean has = sp.contains(P_KEYS[i]);
                 chips[i].setText(has ? "预设 " + (i + 1) : "空 " + (i + 1));
-                chips[i].setSelected(has);
+                // 只有当前生效的那一个高亮，避免"有内容"和"正在用"混为一谈
+                chips[i].setSelected(has && i == activePreset);
             }
         };
 
@@ -202,18 +205,39 @@ class ControlPanel {
                 String saved = sp.getString(P_KEYS[idx], null);
                 if (saved == null) {
                     sp.edit().putString(P_KEYS[idx], serialize()).apply();
+                    activePreset = idx;
                     toastShort("已保存为预设 " + (idx + 1));
                 } else {
                     deserialize(saved);
+                    activePreset = idx;
                     refreshAll();
                     onChange.run();
                 }
                 sync.run();
             });
             c.setOnLongClickListener(v -> {
-                sp.edit().putString(P_KEYS[idx], serialize()).apply();
-                toastShort("已覆盖预设 " + (idx + 1));
-                sync.run();
+                if (!sp.contains(P_KEYS[idx])) {
+                    sp.edit().putString(P_KEYS[idx], serialize()).apply();
+                    activePreset = idx;
+                    toastShort("已保存为预设 " + (idx + 1));
+                    sync.run();
+                    return true;
+                }
+                new android.app.AlertDialog.Builder(act)
+                        .setTitle("预设 " + (idx + 1))
+                        .setItems(new String[]{"覆盖为当前设置", "删除这个预设"}, (d, which) -> {
+                            if (which == 0) {
+                                sp.edit().putString(P_KEYS[idx], serialize()).apply();
+                                activePreset = idx;
+                                toastShort("已覆盖预设 " + (idx + 1));
+                            } else {
+                                sp.edit().remove(P_KEYS[idx]).apply();
+                                if (activePreset == idx) activePreset = -1;
+                                toastShort("已删除预设 " + (idx + 1));
+                            }
+                            sync.run();
+                        })
+                        .show();
                 return true;
             });
             chips[i] = c;
@@ -222,7 +246,7 @@ class ControlPanel {
             row.addView(c, lp);
         }
         parent.addView(row, matchWrap());
-        hint(parent, "点击套用；空槽点击保存当前设置；长按覆盖");
+        hint(parent, "点击套用；空槽点击保存；长按可覆盖或删除");
         sync.run();
         refreshers.add(sync);
     }
@@ -236,7 +260,7 @@ class ControlPanel {
         return st.ior + "|" + st.radiusPct + "|" + st.depthPct + "|" + st.thicknessPct + "|"
                 + st.roughPct + "|" + st.dispPct + "|" + st.reflPct + "|" + st.transPct + "|"
                 + st.glossPct + "|" + st.shadowPct + "|" + st.whitePct + "|"
-                + (st.tintOn ? 1 : 0) + "|" + st.segments;
+                + (st.tintOn ? 1 : 0) + "|" + st.segments + "|" + st.warpPct;
     }
 
     private void deserialize(String v) {
@@ -255,6 +279,7 @@ class ControlPanel {
             st.whitePct = Float.parseFloat(a[10]);
             st.tintOn = "1".equals(a[11]);
             st.segments = Integer.parseInt(a[12]);
+            if (a.length > 13) st.warpPct = Float.parseFloat(a[13]);
         } catch (Throwable ignored) {
         }
     }

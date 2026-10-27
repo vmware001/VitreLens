@@ -44,6 +44,7 @@ uniform float u_rough;
 uniform float u_refl;
 uniform float u_trans;
 uniform float u_disp;
+uniform float u_warp;
 uniform float u_segments;
 uniform vec3  u_tint;
 uniform float u_tintOn;
@@ -125,13 +126,20 @@ void main() {
     // three.js: roughness 先按 ior 修正
     float roughEff = clamp(u_rough, 0.0, 1.0) * clamp(u_ior * 2.0 - 2.0, 0.0, 1.0);
 
-    // three.js 色散：三通道用 ior ± dispersion*0.5
-    float halfSpread = max(u_disp, 0.0) * 0.5;
+    // three.js 色散：三通道用 ior ± dispersion*0.5（允许到 2.0，色散才够明显）
+    float halfSpread = clamp(u_disp, 0.0, 2.0) * 0.5;
     vec3 iors = vec3(u_ior - halfSpread, u_ior, u_ior + halfSpread);
 
     vec3 rayR = transmissionRay(N, iors.x);
     vec3 rayG = transmissionRay(N, iors.y);
     vec3 rayB = transmissionRay(N, iors.z);
+
+    // 横向扭曲：隔着玻璃砖看东西时左右方向的错动。
+    // 用归一化坐标算一个柱面压缩量，上下边缘最强，中间基本不动。
+    vec2 qn = q / max(half_, vec2(1.0));
+    float cyl = -qn.x * (1.0 - abs(qn.y)) * 0.85 - qn.x * 0.25;
+    float warpPx = cyl * u_warp * u_thickness * 0.55;
+    rayR.x += warpPx; rayG.x += warpPx; rayB.x += warpPx;
 
     // 越界限幅：位移以 crop 像素计，可用余量也换算成 crop 像素
     vec2 photoUv = u_crop.xy + uv * u_crop.zw;

@@ -27,7 +27,7 @@ class GlassRenderer {
 
     private int program;
     private int uPhoto, uBlur, uBlur2, uRes, uPanel, uRadius, uWhite, uCrop;
-    private int uIor, uDepth, uThickness, uRough, uDisp, uRefl, uTrans, uSegments;
+    private int uIor, uDepth, uThickness, uRough, uDisp, uWarp, uRefl, uTrans, uSegments;
     private int uTint, uTintOn, uGloss, uShadow, uScale;
     private int aPos;
     private int fbo, texPhoto, texBlur, texBlur2;
@@ -161,6 +161,7 @@ class GlassRenderer {
         uThickness = GLES20.glGetUniformLocation(program, "u_thickness");
         uRough = GLES20.glGetUniformLocation(program, "u_rough");
         uDisp = GLES20.glGetUniformLocation(program, "u_disp");
+        uWarp = GLES20.glGetUniformLocation(program, "u_warp");
         uRefl = GLES20.glGetUniformLocation(program, "u_refl");
         uTrans = GLES20.glGetUniformLocation(program, "u_trans");
         uSegments = GLES20.glGetUniformLocation(program, "u_segments");
@@ -255,6 +256,7 @@ class GlassRenderer {
         GLES20.glUniform1f(uThickness, Math.max(1f, st.thicknessPct / 100f * p.h * 1.1f));
         GLES20.glUniform1f(uRough, st.roughPct / 100f);
         GLES20.glUniform1f(uDisp, st.dispPct / 100f);
+        GLES20.glUniform1f(uWarp, st.warpPct / 100f);
         GLES20.glUniform1f(uRefl, st.reflPct / 100f);
         GLES20.glUniform1f(uTrans, st.transPct / 100f);
         GLES20.glUniform1f(uSegments, Math.max(4, st.segments));

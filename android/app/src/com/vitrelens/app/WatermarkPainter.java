@@ -49,7 +49,8 @@ class WatermarkPainter {
         float depthPct = 36f;      // 边缘收边宽度 = 玻璃深度
         float thicknessPct = 72f;  // 玻璃厚度
         float roughPct = 8f;       // 粗糙度
-        float dispPct = 38f;       // 色散
+        float dispPct = 80f;       // 色散
+        float warpPct = 100f;      // 横向扭曲
         float reflPct = 90f;       // 反射率
         float transPct = 100f;     // 透射率
         float glossPct = 50f;      // 高光
@@ -73,7 +74,7 @@ class WatermarkPainter {
             s.nameSize = nameSize; s.metaSize = metaSize; s.italic = italic;
             s.ior = ior; s.radiusPct = radiusPct; s.depthPct = depthPct;
             s.thicknessPct = thicknessPct; s.roughPct = roughPct; s.dispPct = dispPct;
-            s.reflPct = reflPct; s.transPct = transPct; s.glossPct = glossPct;
+            s.reflPct = reflPct; s.transPct = transPct; s.glossPct = glossPct; s.warpPct = warpPct;
             s.shadowPct = shadowPct; s.whitePct = whitePct;
             s.tintOn = tintOn; s.segments = segments;
             s.videoGapShift = videoGapShift;
