@@ -22,6 +22,9 @@ fi
 echo "== 当前账号 =="
 gh auth status 2>&1 | head -4
 
+# 让 git push 也复用 gh 的凭据
+gh auth setup-git 2>/dev/null || true
+
 if [ -n "$(git status --porcelain)" ]; then
   echo "!! 工作区还有未提交的改动，先提交再发布"
   git status --short | head
