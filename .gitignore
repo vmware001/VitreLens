@@ -1,6 +1,7 @@
 # ── 构建产物
 android/build/
 android/VitreLens.apk
+android/release/
 android/*.idsig
 android/build.log
 

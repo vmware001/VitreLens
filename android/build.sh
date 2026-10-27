@@ -8,8 +8,13 @@ export JAVA_HOME="C:/Users/esetp/tools/jdk21/jdk-21.0.11+10"
 JAVAC="$JAVA_HOME/bin/javac.exe"
 KEYTOOL="$JAVA_HOME/bin/keytool.exe"
 
-rm -rf build
-mkdir -p build/gen build/classes build/dex
+# KEEP_BUILD=1 时复用构建目录（发布流程要连编两次，避免重复整目录删除）
+if [ "${KEEP_BUILD:-0}" = "1" ]; then
+  mkdir -p build/gen build/classes build/dex
+else
+  rm -rf build
+  mkdir -p build/gen build/classes build/dex
+fi
 
 # ── 每次构建自动递增版本号；构建失败则回滚，避免白白吃掉一个版本号
 MANIFEST=app/AndroidManifest.xml
@@ -23,6 +28,10 @@ restore_manifest() {
 trap 'rc=$?; if [ $rc -ne 0 ]; then restore_manifest; fi' EXIT
 
 PYBIN0="C:/Users/esetp/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
+# SKIP_VERSION_BUMP=1 时沿用当前版本号（发布流程要连编两次、共用同一个版本）
+if [ "${SKIP_VERSION_BUMP:-0}" = "1" ]; then
+  echo "== 沿用当前版本号（SKIP_VERSION_BUMP=1）=="
+else
 "$PYBIN0" - <<'BUMP'
 import re, io
 p = 'app/AndroidManifest.xml'
@@ -34,6 +43,7 @@ s = re.sub(r'android:versionName="[^"]*"', 'android:versionName="%s"' % name, s,
 io.open(p, 'w', encoding='utf-8', newline='\n').write(s)
 print('== 版本号 -> versionCode %d / versionName %s ==' % (code, name))
 BUMP
+fi
 
 echo "== 0/6 导出色器（唯一真源：js/glass.js）=="
 PYBIN="$PYBIN0"
