@@ -109,6 +109,10 @@ public class MainActivity extends Activity {
             }
         });
         controls = findViewById(R.id.controls);
+
+        // 预览卡片也用同一套液态玻璃背景
+        findViewById(R.id.stage).setBackground(
+                new GlassCardDrawable(getResources().getDisplayMetrics().density * 22f, 0x2BFFFFFF));
         btnExport.setEnabled(false);
 
         try {
@@ -350,7 +354,7 @@ public class MainActivity extends Activity {
 
     /** 缩到极小再放大，得到一个廉价但好看的模糊背景 */
     private Bitmap makeBackdrop(Bitmap src) {
-        int w = 36;
+        int w = 140;
         int h = Math.max(1, Math.round(w * (float) src.getHeight() / src.getWidth()));
         Bitmap small = Bitmap.createScaledBitmap(src, w, h, true);
         Bitmap out = Bitmap.createScaledBitmap(small, w * 3, h * 3, true);

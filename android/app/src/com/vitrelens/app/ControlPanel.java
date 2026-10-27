@@ -342,7 +342,7 @@ class ControlPanel {
 
         LinearLayout c = new LinearLayout(act);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(act.getDrawable(R.drawable.bg_glass_card));
+        c.setBackground(new GlassCardDrawable(dp(22), 0x2BFFFFFF));
         c.setPadding(dp(14), dp(6), dp(14), dp(10));
         LinearLayout.LayoutParams lp = matchWrap();
         lp.bottomMargin = dp(14);

@@ -38,12 +38,17 @@ transmission / reflectivity / ior / dispersion / thickness`）与整体思路
 - 项目主页：https://github.com/Specy/liquid-glass
 - 作者说明：https://specy.app/blog/posts/liquid-glass-in-the-web
 
-### Kyant0/AndroidLiquidGlass
+### Kyant0/AndroidLiquidGlass — Apache-2.0
 
-界面视觉语言的参考（玻璃卡片、模糊背景）。**未复制其代码**，也未使用该库
-（它是 Compose Multiplatform 库，本项目是原生 View）。
+**界面视觉语言的参考**：玻璃卡片、模糊照片背景、边缘高光与色散描边。
+
+**未使用该库，也未复制其代码。** 它是 Compose Multiplatform 库，而本项目是原生 View
+（无 Gradle、无 AndroidX、自建 aapt2+javac+d8 构建），引入它等于重写整个 UI 并把 APK
+从 0.8MB 撑到 6MB 以上。因此按同样的视觉语言用原生 `Drawable` 自行实现，见
+`GlassCardDrawable.java`。
 
 - 项目主页：https://github.com/Kyant0/AndroidLiquidGlass
+- 许可：Apache-2.0（与 GPLv3 兼容，但本项目未使用其代码）
 
 ## 2. 随仓库分发的第三方库（仅网页版）
 
