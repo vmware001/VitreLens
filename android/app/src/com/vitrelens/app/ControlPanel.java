@@ -23,7 +23,6 @@ import java.util.Locale;
  */
 class ControlPanel {
 
-    private static final double WHITE_GAMMA = 2.6;
 
     private final Activity act;
     private final WatermarkPainter.Style st;
@@ -125,7 +124,12 @@ class ControlPanel {
         slider(c3, "透射率", 0, 100, 1, () -> st.transPct, v -> st.transPct = v, p -> Math.round(p) + "%");
         slider(c3, "高光", 0, 150, 1, () -> st.glossPct, v -> st.glossPct = v, p -> Math.round(p) + "%");
         slider(c3, "投影", 0, 100, 1, () -> st.shadowPct, v -> st.shadowPct = v, p -> Math.round(p) + "%");
-        slider(c3, "加白", 0, 200, 1, () -> st.whitePct, v -> st.whitePct = v, p -> Math.round(p) + "%");
+        // 加白走对数曲线：滑块位置 0~100 → 实际加白量由 whiteValue 换算
+        // 步长 0.5：对数曲线低段很陡，1% 一步会有 1~2% 的显示偏差
+        slider(c3, "加白", 0, 100, 0.5f,
+                () -> whiteSlider(st.whitePct),
+                v -> st.whitePct = whiteValue(v),
+                p -> Math.round(whiteValue(p)) + "%");
         slider(c3, "细分", 8, 128, 4, () -> st.segments, v -> st.segments = Math.round(v),
                 p -> String.valueOf(Math.round(p)));
         chips(c3, new String[]{"色调"},
@@ -160,22 +164,28 @@ class ControlPanel {
     }
 
     void applyPreset(int idx) {
-        // {ior, depth, thickness, rough, disp, refl, trans, gloss, shadow}
+        // 预设必须覆盖**全部**玻璃参数，否则选了预设某些滑块还停在旧值
+        // {ior, radius, depth, thickness, rough, disp, refl, trans, gloss, shadow, white, warp, segments}
         float[][] p = {
-                {1.46f, 34, 42, 12, 18, 90, 100, 45, 40},
-                {1.30f, 46, 56, 72, 10, 68, 96, 26, 34},
-                {1.72f, 72, 88, 8, 46, 100, 100, 82, 58}
+                {1.46f, 100, 34, 42, 12, 18, 90, 100, 45, 40, 0, 90, 64},
+                {1.30f, 100, 46, 56, 72, 10, 68, 96, 26, 34, 8, 70, 48},
+                {1.72f, 100, 72, 88, 8, 46, 100, 100, 82, 58, 0, 130, 96}
         };
         float[] v = p[Math.max(0, Math.min(2, idx))];
         st.ior = v[0];
-        st.depthPct = v[1];
-        st.thicknessPct = v[2];
-        st.roughPct = v[3];
-        st.dispPct = v[4];
-        st.reflPct = v[5];
-        st.transPct = v[6];
-        st.glossPct = v[7];
-        st.shadowPct = v[8];
+        st.radiusPct = v[1];
+        st.depthPct = v[2];
+        st.thicknessPct = v[3];
+        st.roughPct = v[4];
+        st.dispPct = v[5];
+        st.reflPct = v[6];
+        st.transPct = v[7];
+        st.glossPct = v[8];
+        st.shadowPct = v[9];
+        st.whitePct = v[10];
+        st.warpPct = v[11];
+        st.segments = Math.round(v[12]);
+        st.tintOn = true;
         refreshAll();
         onChange.run();
     }
@@ -290,12 +300,22 @@ class ControlPanel {
 
     /* ── 白值曲线 ── */
 
+    /**
+     * 加白用对数曲线：value = 100·ln(1+2t)/ln3，t 是滑块位置 0~1。
+     * 低段响应快（滑块 10% 已有 17%），高段放缓，符合亮度的感知特性。
+     * 之前是 2.6 次幂，前 30% 几乎拖不动，所以感觉"没反应"。
+     */
+    private static final double WHITE_K = 2.0;
+
     static float whiteValue(float slider) {
-        return (float) (100 * Math.pow(Math.min(1.0, slider / 100.0), WHITE_GAMMA));
+        double t = Math.min(1.0, Math.max(0.0, slider / 100.0));
+        return (float) (100 * Math.log(1 + WHITE_K * t) / Math.log(1 + WHITE_K));
     }
 
+    /** whiteValue 的反函数，用于把存储值换算回滑块位置 */
     static float whiteSlider(float value) {
-        return (float) (100 * Math.pow(Math.min(1.0, value / 100.0), 1 / WHITE_GAMMA));
+        double v = Math.min(1.0, Math.max(0.0, value / 100.0));
+        return (float) (100 * (Math.pow(1 + WHITE_K, v) - 1) / WHITE_K);
     }
 
     static int alignIndex(String a) {

@@ -26,12 +26,15 @@ mkdir -p /tmp/vl_logo_bak
 rm -f /tmp/vl_logo_bak/*.png
 cp "$AND"/local-logos/*.png /tmp/vl_logo_bak/ 2>/dev/null || true
 PYBIN0="C:/Users/esetp/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
-restore_logos() { cp /tmp/vl_logo_bak/*.png "$AND"/local-logos/ 2>/dev/null || true; }
+restore_logos() {
+  cp /tmp/vl_logo_bak/*.png "$AND"/local-logos/ 2>/dev/null || true
+  rm -f "$AND"/local-logos/_ph.png
+}
 trap restore_logos EXIT
 
 # 2. 发布版：把品牌图标覆盖成 1×1 占位图（用写代替删，避免触发批量删除保护）
 echo "=== 1/3 构建发布版（不含品牌图标）==="
-PH=/tmp/vl_placeholder.png
+PH="$AND/local-logos/_ph.png"
 "$PYBIN0" - "$PH" <<'PLACEHOLDER'
 import sys, zlib, struct
 def chunk(t, d):
