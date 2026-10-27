@@ -35,6 +35,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
 
     private static final int REQ_PICK = 1001;
+    private static final int REQ_LOGO = 1002;
     private static final int PREVIEW_MAX = 1400;
 
     private ImageView preview, backdrop;
@@ -160,6 +161,7 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {
         }
 
+        loadCustomLogo();
         panel = new ControlPanel(this, style, this::schedulePreview);
         refreshers = panel.build(controls);
 
@@ -211,7 +213,79 @@ public class MainActivity extends Activity {
         if (req == REQ_PICK && res == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) loadImage(uri);
+        } else if (req == REQ_LOGO && res == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) importCustomLogo(uri);
         }
+    }
+
+    /* ── 自定义图标 ── */
+
+    void pickCustomLogo() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("image/*");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivityForResult(i, REQ_LOGO);
+    }
+
+    private void loadCustomLogo() {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), "custom_logo.png");
+            if (f.isFile()) {
+                Bitmap b = BitmapFactory.decodeFile(f.getAbsolutePath());
+                if (b != null) WatermarkPainter.setCustomLogo(b);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void importCustomLogo(Uri uri) {
+        ProgressDialog pd = ProgressDialog.show(this, "", "读取图标…", true, false);
+        new Thread(() -> {
+            try {
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                InputStream in0 = getContentResolver().openInputStream(uri);
+                BitmapFactory.decodeStream(in0, null, bounds);
+                if (in0 != null) in0.close();
+
+                int max = 720;
+                int sample = 1;
+                while (bounds.outWidth / (sample * 2) >= max || bounds.outHeight / (sample * 2) >= max) sample *= 2;
+
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inSampleSize = sample;
+                o.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                InputStream in1 = getContentResolver().openInputStream(uri);
+                Bitmap b = BitmapFactory.decodeStream(in1, null, o);
+                if (in1 != null) in1.close();
+                if (b == null) throw new RuntimeException("无法解码这张图片");
+
+                // 存一份到私有目录，下次启动还能用
+                java.io.File f = new java.io.File(getFilesDir(), "custom_logo.png");
+                java.io.FileOutputStream fo = new java.io.FileOutputStream(f);
+                b.compress(Bitmap.CompressFormat.PNG, 100, fo);
+                fo.close();
+
+                final Bitmap src = b;
+                runOnUiThread(() -> {
+                    pd.dismiss();
+                    WatermarkPainter.setCustomLogo(src);
+                    style.brand = 7;
+                    style.showBrand = true;
+                    if (refreshers != null) for (Runnable r : refreshers) r.run();
+                    schedulePreview();
+                    toast("已设为自定义图标");
+                });
+            } catch (Throwable e) {
+                final String msg = String.valueOf(e.getMessage());
+                runOnUiThread(() -> {
+                    pd.dismiss();
+                    toast("导入失败：" + msg);
+                });
+            }
+        }).start();
     }
 
     /* ── 载入 ── */

@@ -47,9 +47,13 @@ class ControlPanel {
         textRow(c1, "时间 / 地点", () -> st.meta, s -> st.meta = s, "2026.10.26 12:06:26");
 
         label(c1, "相机品牌 Logo");
-        segmentedWrap(c1, new String[]{"无", "徕卡", "哈苏", "哈苏H", "蔡司", "理光", "苹果"},
+        segmentedWrap(c1, new String[]{"无", "徕卡", "哈苏", "哈苏H", "蔡司", "理光", "苹果", "自定义"},
                 v -> { st.brand = v; st.showBrand = v > 0; },
                 () -> st.brand);
+        button(c1, "选择自定义图标…", () -> {
+            if (act instanceof MainActivity) ((MainActivity) act).pickCustomLogo();
+        });
+        hint(c1, "建议用透明背景的 PNG，或纯色底的字标（会自动抠掉底色）");
 
         label(c1, "显示");
         chips(c1, new String[]{"副标题", "Logo", "参数", "时间"},

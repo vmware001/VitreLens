@@ -465,6 +465,22 @@ class WatermarkPainter {
             // 用亮度调制 alpha——深色底变淡、白色字保持不透明。
             double opaqueRatio = 1.0 - transparent / (double) px.length;
             if (opaqueRatio < 0.6) return null;
+            // 还要区分「实心底 + 浅色字」（徕卡红章）和「一整块纯色图形」（苹果剪影）：
+            // 前者亮度反差大，后者几乎没反差。没反差的保持原 alpha。
+            double sum = 0, sum2 = 0;
+            int n = 0;
+            for (int c : px) {
+                if ((c >>> 24) < 200) continue;
+                double l = (0.299 * ((c >> 16) & 0xFF) + 0.587 * ((c >> 8) & 0xFF)
+                        + 0.114 * (c & 0xFF)) / 255.0;
+                sum += l;
+                sum2 += l * l;
+                n++;
+            }
+            if (n == 0) return null;
+            double mean = sum / n;
+            double std = Math.sqrt(Math.max(0, sum2 / n - mean * mean));
+            if (std < 0.12) return null;
             Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
             int[] dst = new int[px.length];
             for (int i = 0; i < px.length; i++) {
@@ -538,7 +554,29 @@ class WatermarkPainter {
         }
     }
 
+    /** 自定义图标（品牌 7），由用户从相册选，存 App 私有目录 */
+    private static Bitmap customLogo;
+    private static float customAspect = 1f;
+
+    static void setCustomLogo(Bitmap b) {
+        if (b == null) {
+            customLogo = null;
+            return;
+        }
+        Bitmap m = buildMask(b);
+        if (m == null) m = b;
+        Bitmap t = trimAlpha(m);
+        if (t != null) m = t;
+        customLogo = m;
+        customAspect = m.getWidth() / (float) Math.max(1, m.getHeight());
+    }
+
+    static boolean hasCustomLogo() {
+        return customLogo != null;
+    }
+
     private static Bitmap logoBitmap(int brand) {
+        if (brand == 7) return customLogo;
         if (logoBmps == null) return null;
         int i = brand - 1;
         if (i < 0 || i >= logoBmps.length) return null;
@@ -549,7 +587,7 @@ class WatermarkPainter {
     private static float logoWidth(int brand, float h) {
         Bitmap b = logoBitmap(brand);
         if (b != null) {
-            float asp = logoAspect[brand - 1];
+            float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
             float w = Math.min(h * 2.2f, h * asp);
             return w;
         }
@@ -589,6 +627,21 @@ class WatermarkPainter {
         c.drawBitmap(b, null, dst, tint(0xFFFFFFFF));
     }
 
+    /** 蔡司标志的外框：比内容略大一圈的圆角矩形描边 */
+    private static void drawLogoFrame(Canvas c, float x, float y, float w, float hh, String material) {
+        float pad = hh * 0.10f;
+        RectF r = new RectF(x - pad, y - pad, x + w + pad, y + hh + pad);
+        float rad = Math.min(r.width(), r.height()) * 0.10f;
+        float stroke = Math.max(1f, hh * 0.055f);
+        int color = "frost".equals(material) ? 0x9EFFFFFF
+                : ("liquid".equals(material) ? 0xE6FFFFFF : 0xFFFFFFFF);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(stroke);
+        p.setColor(color);
+        c.drawRoundRect(r, rad, rad, p);
+    }
+
     private static RectF offset(RectF r, float dx, float dy) {
         return new RectF(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy);
     }
@@ -609,6 +662,7 @@ class WatermarkPainter {
             case 4: return h;           // 蔡司
             case 5: return h * 1.66f;   // 理光
             case 6: return h * 0.86f;   // 苹果
+            case 7: return h;           // 自定义
             default: return 0;
         }
     }
@@ -616,11 +670,13 @@ class WatermarkPainter {
     private static void drawLogo(Canvas c, int brand, float x, float y, float h, String material) {
         Bitmap b = logoBitmap(brand);
         if (b != null) {
-            float asp = logoAspect[brand - 1];
+            float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
             float w = Math.min(h * 2.2f, h * asp);
             float hh = w / asp;
             float top = y + (h - hh) / 2f;
             drawLogoBitmap(c, b, x, top, w, hh, material);
+            // 蔡司的标是一个带边框的方块，只留字母会丢掉标志性的外框
+            if (brand == 4) drawLogoFrame(c, x, top, w, hh, material);
             return;
         }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
