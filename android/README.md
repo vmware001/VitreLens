@@ -292,3 +292,15 @@ APK 内不含任何第三方库：只有本项目自己的 `classes.dex` 与资�
 | `android/build/`、`*.apk` | 构建产物 |
 
 缺少 `reference/` 时元数据单测会**自动跳过**（打印提示、退出码 0），不影响构建。
+
+## 参考样张
+
+`android/tools/MetaTest.java` 需要三类样张才能跑完整测试，放在 `reference/`（**不入库**）：
+
+| 文件名 | 内容 |
+| --- | --- |
+| `IMG20261025201847_config.jpg` | ProXDR 静图（ICC + 增益图标记 + MPF 双图） |
+| `dynamic_photo.jpg` | 动态照片（MPF + 视频尾） |
+| `IMG20261025201847.heic` | HEIC（验证 `meta→iloc` 取 Exif、`colr` 取 ICC、box 之后的 HDR 尾块） |
+
+换成自己的照片也行，只要同样是这三类。**目录为空时测试会自动跳过**（退出码 0），不影响构建。

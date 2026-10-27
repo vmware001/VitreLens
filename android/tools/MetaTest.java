@@ -302,7 +302,7 @@ public class MetaTest {
         for (String n : need) if (new File(dir, n).isFile()) have++;
         if (have == 0) {
             System.out.println("跳过元数据测试：未找到参考样张目录 " + dir.getPath());
-            System.out.println("  放三张样张进去即可运行（见 reference/README.md）");
+            System.out.println("  放三张样张进去即可运行（说明见 android/README.md 的「参考样张」一节）");
             return;
         }
         System.out.println("参考样张目录：" + dir.getCanonicalPath() + "（找到 " + have + "/" + need.length + "）");
