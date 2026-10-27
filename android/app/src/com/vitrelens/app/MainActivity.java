@@ -419,7 +419,10 @@ public class MainActivity extends Activity {
             } else if (meta.motion) {
                 st.append(" · 无增益图");
             } else {
-                st.append(" · 无增益图（导出为 8bit JPEG，HDR 无法保留）");
+                st.append(" · 无增益图（HDR 无法保留）");
+                // HEIC 没有增益图时，OPPO 相册的「转换为兼容格式」会重新生成一份，
+                // 先用它转成 JPEG 再导入本 App，HDR 就能保留下来。
+                st.append("\n提示：先在相册「转换为兼容格式」转成 JPEG 再导入，ProXDR 才能保住");
             }
         }
         status.setText(st.toString());
