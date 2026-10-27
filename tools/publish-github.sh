@@ -3,6 +3,9 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Git Bash 里 gh 默认不在 PATH 上
+[ -d "/c/Program Files/GitHub CLI" ] && export PATH="/c/Program Files/GitHub CLI:$PATH"
+
 REPO="${1:-VitreLens}"
 VIS="${2:---public}"
 
