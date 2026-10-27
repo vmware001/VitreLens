@@ -47,8 +47,8 @@ class ControlPanel {
         textRow(c1, "时间 / 地点", () -> st.meta, s -> st.meta = s, "2026.10.26 12:06:26");
 
         label(c1, "相机品牌 Logo");
-        segmented(c1, new String[]{"无", "徕卡", "哈苏", "蔡司", "理光"},
-                () -> st.brand, v -> { st.brand = v; st.showBrand = v > 0; },
+        segmentedWrap(c1, new String[]{"无", "徕卡", "哈苏", "哈苏H", "蔡司", "理光", "苹果"},
+                v -> { st.brand = v; st.showBrand = v > 0; },
                 () -> st.brand);
 
         label(c1, "显示");
@@ -430,8 +430,44 @@ class ControlPanel {
             float v = min + p * step;
             set.set(v);
             val.setText(fmt.fmt(v));
+            bar.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK);
             onChange.run();
         }));
+        sync.run();
+        refreshers.add(sync);
+    }
+
+    /** 单选的胶囊组（自动换行，每行最多 4 个） */
+    private void segmentedWrap(LinearLayout parent, String[] options, IntSetter set, IntGetter current) {
+        final int perRow = 4;
+        TextView[] chips = new TextView[options.length];
+        final Runnable sync = () -> {
+            int cur = current.get();
+            for (int i = 0; i < chips.length; i++) chips[i].setSelected(i == cur);
+        };
+        for (int start = 0; start < options.length; start += perRow) {
+            LinearLayout row = new LinearLayout(act);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, start == 0 ? dp(4) : dp(6), 0, dp(2));
+            int count = Math.min(perRow, options.length - start);
+            for (int k = 0; k < count; k++) {
+                final int idx = start + k;
+                TextView c = chip(options[idx]);
+                c.setOnClickListener(v -> { set.set(idx); sync.run(); onChange.run(); });
+                chips[idx] = c;
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1);
+                if (k > 0) lp.leftMargin = dp(6);
+                row.addView(c, lp);
+            }
+            // 最后一行不足 4 个时补空位，保持列宽一致
+            for (int k = count; k < perRow; k++) {
+                View spacer = new View(act);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1);
+                if (k > 0) lp.leftMargin = dp(6);
+                row.addView(spacer, lp);
+            }
+            parent.addView(row, matchWrap());
+        }
         sync.run();
         refreshers.add(sync);
     }

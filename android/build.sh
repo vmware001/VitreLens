@@ -49,7 +49,7 @@ tail -3 build/test.log
 
 echo "== 0.5/6 同步本地品牌图标 =="
 mkdir -p app/res/drawable-nodpi
-for n in leica hasselblad zeiss ricoh; do
+for n in leica hasselblad hasselblad_h zeiss ricoh apple; do
   if [ -f "local-logos/$n.png" ]; then
     cp "local-logos/$n.png" "app/res/drawable-nodpi/logo_$n.png"
     echo "  使用本地图标 logo_$n.png"

@@ -138,9 +138,10 @@ public class MainActivity extends Activity {
 
         try {
             int[] ids = {R.drawable.logo_leica, R.drawable.logo_hasselblad,
-                    R.drawable.logo_zeiss, R.drawable.logo_ricoh};
-            Bitmap[] bmps = new Bitmap[4];
-            for (int i = 0; i < 4; i++) {
+                    R.drawable.logo_hasselblad_h, R.drawable.logo_zeiss,
+                    R.drawable.logo_ricoh, R.drawable.logo_apple};
+            Bitmap[] bmps = new Bitmap[ids.length];
+            for (int i = 0; i < ids.length; i++) {
                 bmps[i] = android.graphics.BitmapFactory.decodeResource(getResources(), ids[i]);
             }
             WatermarkPainter.initLogos(bmps);
@@ -149,9 +150,10 @@ public class MainActivity extends Activity {
 
         try {
             int[] ids = {R.drawable.logo_leica, R.drawable.logo_hasselblad,
-                    R.drawable.logo_zeiss, R.drawable.logo_ricoh};
-            Bitmap[] bmps = new Bitmap[4];
-            for (int i = 0; i < 4; i++) {
+                    R.drawable.logo_hasselblad_h, R.drawable.logo_zeiss,
+                    R.drawable.logo_ricoh, R.drawable.logo_apple};
+            Bitmap[] bmps = new Bitmap[ids.length];
+            for (int i = 0; i < ids.length; i++) {
                 bmps[i] = android.graphics.BitmapFactory.decodeResource(getResources(), ids[i]);
             }
             WatermarkPainter.initLogos(bmps);
@@ -446,8 +448,9 @@ public class MainActivity extends Activity {
         String s = name.toLowerCase();
         if (s.contains("leica") || s.contains("xiaomi") || s.contains("徕卡")) return 1;
         if (s.contains("hasselblad") || s.contains("oppo") || s.contains("oneplus") || s.contains("哈苏")) return 2;
-        if (s.contains("zeiss") || s.contains("vivo") || s.contains("蔡司")) return 3;
-        if (s.contains("ricoh") || s.contains("理光")) return 4;
+        if (s.contains("zeiss") || s.contains("vivo") || s.contains("蔡司")) return 4;
+        if (s.contains("ricoh") || s.contains("理光")) return 5;
+        if (s.contains("apple") || s.contains("iphone")) return 6;
         return 0;
     }
 

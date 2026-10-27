@@ -429,18 +429,88 @@ class WatermarkPainter {
 
     /** 本地品牌图标（可选）。为空或 1×1 时回退到内置矢量绘制 */
     private static Bitmap[] logoBmps;
-    private static float[] logoAspect = {1f, 1f, 1f, 1f};
+    private static float[] logoAspect = {1f, 1f, 1f, 1f, 1f, 1f};
 
     static void initLogos(Bitmap[] bmps) {
         logoBmps = bmps;
-        for (int i = 0; i < 4 && i < bmps.length; i++) {
+        for (int i = 0; i < 6 && i < bmps.length; i++) {
             Bitmap b = bmps[i];
             if (b != null && b.getWidth() > 1 && b.getHeight() > 0) {
-                Bitmap t = trimAlpha(b);
+                Bitmap m = buildMask(b);
+                if (m != null) logoBmps[i] = m;
+                Bitmap t = trimAlpha(logoBmps[i]);
                 if (t != null) logoBmps[i] = t;
                 logoAspect[i] = logoBmps[i].getWidth() / (float) logoBmps[i].getHeight();
             }
         }
+    }
+
+    /**
+     * 很多品牌图标是「白底黑字」或「蓝底白字」的实心图，没有透明通道。
+     * 直接按 alpha 染白会得到一整块白方块。这里改成：以四角的主色当背景，
+     * 用「与背景色的距离」当不透明度——文字留下、底色变透明。
+     */
+    private static Bitmap buildMask(Bitmap src) {
+        int w = src.getWidth(), h = src.getHeight();
+        if (w < 3 || h < 3) return null;
+        int[] px = new int[w * h];
+        src.getPixels(px, 0, w, 0, 0, w, h);
+
+        int transparent = 0;
+        for (int c : px) if ((c >>> 24) < 200) transparent++;
+
+        if (transparent > px.length * 0.1) {
+            // 有透明通道，但内容是一整块实心（比如徕卡的红色圆章 + 白色手写体）：
+            // 只按 alpha 染白会得到一个白饼，字就看不见了。
+            // 用亮度调制 alpha——深色底变淡、白色字保持不透明。
+            double opaqueRatio = 1.0 - transparent / (double) px.length;
+            if (opaqueRatio < 0.6) return null;
+            Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            int[] dst = new int[px.length];
+            for (int i = 0; i < px.length; i++) {
+                int c = px[i];
+                double lum = (0.299 * ((c >> 16) & 0xFF) + 0.587 * ((c >> 8) & 0xFF)
+                        + 0.114 * (c & 0xFF)) / 255.0;
+                double k = 0.35 + 0.65 * Math.min(1.0, Math.max(0.0, (lum - 0.5) / 0.35));
+                int alpha = (int) Math.round(((c >>> 24) & 0xFF) * k);
+                dst[i] = (alpha << 24) | 0x00FFFFFF;
+            }
+            out.setPixels(dst, 0, w, 0, 0, w, h);
+            return out;
+        }
+
+        int[] corner = {px[0], px[w - 1], px[(h - 1) * w], px[w * h - 1]};
+        int bg = corner[0];
+        int best = 0;
+        for (int c : corner) {
+            int n = 0;
+            for (int d : corner) if (near(c, d)) n++;
+            if (n > best) { best = n; bg = c; }
+        }
+
+        int br = (bg >> 16) & 0xFF, bgc = (bg >> 8) & 0xFF, bb = bg & 0xFF;
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        int[] dst = new int[px.length];
+        for (int i = 0; i < px.length; i++) {
+            int c = px[i];
+            int dr = ((c >> 16) & 0xFF) - br;
+            int dg = ((c >> 8) & 0xFF) - bgc;
+            int db = (c & 0xFF) - bb;
+            double d = Math.sqrt(dr * dr + dg * dg + db * db) / 441.0;
+            double a = (d - 0.06) / (0.35 - 0.06);
+            a = a < 0 ? 0 : (a > 1 ? 1 : a);
+            int alpha = (int) Math.round(a * 255);
+            dst[i] = (alpha << 24) | 0x00FFFFFF;
+        }
+        out.setPixels(dst, 0, w, 0, 0, w, h);
+        return out;
+    }
+
+    private static boolean near(int a, int b) {
+        int dr = ((a >> 16) & 0xFF) - ((b >> 16) & 0xFF);
+        int dg = ((a >> 8) & 0xFF) - ((b >> 8) & 0xFF);
+        int db = (a & 0xFF) - (b & 0xFF);
+        return Math.abs(dr) + Math.abs(dg) + Math.abs(db) < 60;
     }
 
     /** 裁掉四周全透明的空白：各品牌图标的留白比例差别很大，不裁的话大小完全不统一 */
@@ -533,10 +603,12 @@ class WatermarkPainter {
 
     private static float vectorLogoWidth(int brand, float h) {
         switch (brand) {
-            case 1: return h * 1.02f;
-            case 2: return h * 0.80f;
-            case 3: return h;
-            case 4: return h * 1.66f;
+            case 1: return h * 1.02f;   // 徕卡
+            case 2: return h * 0.80f;   // 哈苏（H 形）
+            case 3: return h * 0.80f;   // 哈苏（H 形，独立选项）
+            case 4: return h;           // 蔡司
+            case 5: return h * 1.66f;   // 理光
+            case 6: return h * 0.86f;   // 苹果
             default: return 0;
         }
     }
@@ -564,7 +636,8 @@ class WatermarkPainter {
                 c.drawText("Leica", x + h / 2f, y + h * 0.63f, t);
                 break;
             }
-            case 2: {
+            case 2:
+            case 3: {
                 p.setColor(0xFFFFFFFF);
                 float bw = h * 0.155f;
                 float w = h * 0.80f;
@@ -583,7 +656,7 @@ class WatermarkPainter {
                 c.restore();
                 break;
             }
-            case 3: {
+            case 4: {
                 p.setColor(0xFF0B4EA2);
                 c.drawRoundRect(new RectF(x, y, x + h, y + h), h * 0.13f, h * 0.13f, p);
                 Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -594,13 +667,37 @@ class WatermarkPainter {
                 c.drawText("ZEISS", x + h / 2f, y + h * 0.63f, t);
                 break;
             }
-            case 4: {
+            case 5: {
                 Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
                 t.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
                 t.setTextSize(h * 0.44f);
                 t.setLetterSpacing(0.08f);
                 t.setColor(0xFFFFFFFF);
                 c.drawText("RICOH", x, y + h * 0.80f, t);
+                break;
+            }
+            case 6: {
+                // 苹果：两瓣果身 + 上方一片叶子
+                float w = h * 0.86f;
+                Path a = new Path();
+                a.moveTo(x + w * 0.50f, y + h * 0.32f);
+                a.cubicTo(x + w * 0.42f, y + h * 0.22f, x + w * 0.28f, y + h * 0.18f, x + w * 0.18f, y + h * 0.26f);
+                a.cubicTo(x + w * 0.06f, y + h * 0.36f, x + w * 0.05f, y + h * 0.55f, x + w * 0.12f, y + h * 0.70f);
+                a.cubicTo(x + w * 0.19f, y + h * 0.85f, x + w * 0.31f, y + h * 0.95f, x + w * 0.42f, y + h * 0.93f);
+                a.cubicTo(x + w * 0.47f, y + h * 0.92f, x + w * 0.53f, y + h * 0.92f, x + w * 0.58f, y + h * 0.93f);
+                a.cubicTo(x + w * 0.69f, y + h * 0.95f, x + w * 0.81f, y + h * 0.85f, x + w * 0.88f, y + h * 0.70f);
+                a.cubicTo(x + w * 0.95f, y + h * 0.55f, x + w * 0.94f, y + h * 0.36f, x + w * 0.82f, y + h * 0.26f);
+                a.cubicTo(x + w * 0.72f, y + h * 0.18f, x + w * 0.58f, y + h * 0.22f, x + w * 0.50f, y + h * 0.32f);
+                a.close();
+                p.setColor(0xFFFFFFFF);
+                c.drawPath(a, p);
+
+                Path leaf = new Path();
+                leaf.moveTo(x + w * 0.52f, y + h * 0.26f);
+                leaf.cubicTo(x + w * 0.54f, y + h * 0.16f, x + w * 0.62f, y + h * 0.08f, x + w * 0.72f, y + h * 0.06f);
+                leaf.cubicTo(x + w * 0.74f, y + h * 0.16f, x + w * 0.68f, y + h * 0.25f, x + w * 0.58f, y + h * 0.28f);
+                leaf.close();
+                c.drawPath(leaf, p);
                 break;
             }
             default:
