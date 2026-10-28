@@ -51,6 +51,22 @@ cd android
 
 `android/sdk/`、`reference/` 与签名密钥都已在 `.gitignore` 中排除，需自备。
 
+## 应用内更新
+
+点标题右侧的版本号可以检查更新；启动时也会静默查一次（每天最多一次，失败不打扰）。
+
+流程是 `GitHub Releases API → 下载 APK → 交给系统安装器`，实现在 `Updater.java`：
+
+- 版本比较按点分段，`1.44 > 1.39`
+- 下载进度：GitHub 的直链常走 chunked、不给 `Content-Length`，拿不到长度时退化成「已下载 X KB」
+- 安装前用 `PackageManager.getPackageArchiveInfo` 校验包名，链接被换掉也装不上别的东西
+- Android 8+ 没有「安装未知应用」权限时，直接跳到对应的设置页
+- **国内直连 `github.com` 的下载服务器常常不通**，失败对话框里有「用浏览器打开」的兜底
+
+APK 通过自写的 `ApkProvider`（只读 `ContentProvider`）以 `content://` 交给安装器 ——
+本项目没有 AndroidX，用不了 `androidx.core.content.FileProvider`，
+而 Android 7 以后用 `file://` 传 APK 会直接抛 `FileUriExposedException`。
+
 ## 许可
 
 **GNU General Public License v3.0**，见 [`LICENSE`](LICENSE)。

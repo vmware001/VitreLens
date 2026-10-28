@@ -54,11 +54,16 @@
                         android:letterSpacing="0.03"
                         android:textStyle="bold" />
 
+                    <!-- 点这里检查更新。10sp 的字太小点不中，用 padding 把热区撑到 32dp 高 -->
                     <TextView
                         android:id="@+id/tvVer"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
+                        android:layout_marginStart="2dp"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="8dp"
+                        android:paddingTop="9dp"
+                        android:paddingBottom="9dp"
                         android:text="v1.0"
                         android:textColor="#80FFFFFF"
                         android:textSize="10sp" />

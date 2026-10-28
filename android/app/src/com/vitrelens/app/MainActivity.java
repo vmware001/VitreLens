@@ -43,6 +43,8 @@ public class MainActivity extends Activity {
     private TextView hint, status, sizeInfo, btnPick, btnExport, btnDetail;
     private boolean detailMode;
     private float closeUpPan = 0.5f;
+    private String versionName = "1.0";
+    private boolean checkingUpdate;
     private Bitmap lastComposed;
     private Bitmap cropBuf;          // 特写裁剪的复用缓冲，拖动时不重新分配
     private Canvas cropCanvas;
@@ -119,10 +121,14 @@ public class MainActivity extends Activity {
         btnExport.setEnabled(false);
 
         try {
-            String vn = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
-            ((TextView) findViewById(R.id.tvVer)).setText("v" + vn);
+            versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (Throwable ignored) {
+            versionName = "1.0";
         }
+        TextView ver = findViewById(R.id.tvVer);
+        ver.setText("v" + versionName);
+        // 点版本号手动检查更新（不额外占界面）
+        ver.setOnClickListener(v -> checkUpdate(false));
 
         btnPick.setOnClickListener(v -> pickImage());
         btnExport.setOnClickListener(v -> export());
@@ -165,6 +171,11 @@ public class MainActivity extends Activity {
                 : "支持 JPG / PNG / HEIC；导出保留 EXIF、动态照片与 HDR 增益图");
 
         handleIncoming(getIntent());
+
+        // 启动 3 秒后静默查一次；拿不到网络就直接放弃，不弹任何东西
+        if (Updater.shouldAutoCheck(this)) {
+            ui.postDelayed(() -> checkUpdate(true), 3000);
+        }
     }
 
     @Override
@@ -202,6 +213,143 @@ public class MainActivity extends Activity {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    /* ── 自动更新 ── */
+
+    private void checkUpdate(boolean silent) {
+        if (checkingUpdate) return;
+        checkingUpdate = true;
+        if (!silent) toast("正在检查更新…");
+        new Thread(() -> {
+            try {
+                Updater.Info info = Updater.fetchLatest();
+                Updater.markChecked(this);
+                final boolean newer = Updater.isNewer(info.version, versionName);
+                runOnUiThread(() -> {
+                    checkingUpdate = false;
+                    if (newer) showUpdateDialog(info);
+                    else if (!silent) toast("已是最新版本 v" + versionName);
+                });
+            } catch (Throwable t) {
+                Updater.log("检查更新失败：" + t);
+                runOnUiThread(() -> {
+                    checkingUpdate = false;
+                    if (!silent) toast("检查更新失败：" + t.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void showUpdateDialog(Updater.Info info) {
+        StringBuilder m = new StringBuilder();
+        m.append("当前 v").append(versionName).append("  →  新版本 v").append(info.version);
+        if (Updater.hasBundledLogos(this)) {
+            m.append("\n\n注意：GitHub 上的安装包不含品牌官方图标，");
+            m.append("更新后水印里的品牌标识会变回内置矢量图形。");
+        }
+        String notes = plainNotes(info.notes);
+        // 正文第一行通常就是 "VitreLens 1.39"，标题里已经有了，去掉
+        if (notes.startsWith("VitreLens")) {
+            int nl = notes.indexOf('\n');
+            if (nl > 0) notes = notes.substring(nl + 1).trim();
+        }
+        if (notes.length() > 400) notes = notes.substring(0, 400) + "…";
+        if (!notes.isEmpty()) m.append("\n\n").append(notes);
+
+        new AlertDialog.Builder(this)
+                .setTitle("发现新版本")
+                .setMessage(m.toString())
+                .setPositiveButton("下载并安装", (d, w) -> startUpdate(info))
+                .setNegativeButton("稍后", null)
+                .show();
+    }
+
+    private void startUpdate(Updater.Info info) {
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setTitle("下载 v" + info.version);
+        pd.setMessage("正在连接…");
+        pd.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        pd.setMax(100);
+        // GitHub 的直链经常不给 Content-Length，先转圈，拿到长度再切成进度条
+        pd.setIndeterminate(true);
+        pd.setCancelable(false);
+        pd.show();
+
+        new Thread(() -> {
+            try {
+                final java.io.File apk = Updater.download(this, info, (pct, got, total) ->
+                        runOnUiThread(() -> {
+                            if (total > 0 && pct >= 0) {
+                                if (pd.isIndeterminate()) pd.setIndeterminate(false);
+                                pd.setProgress(pct);
+                                pd.setMessage(fmtSize(got) + " / " + fmtSize(total));
+                            } else {
+                                pd.setMessage("已下载 " + fmtSize(got));
+                            }
+                        }));
+                runOnUiThread(() -> {
+                    pd.dismiss();
+                    try {
+                        if (!Updater.install(this, apk)) {
+                            new AlertDialog.Builder(this)
+                                    .setTitle("还差一步")
+                                    .setMessage("系统已经打开「安装未知应用」的设置页。\n"
+                                            + "给 VitreLens 打开权限后，回来再点一次版本号即可。")
+                                    .setPositiveButton("知道了", null)
+                                    .show();
+                        }
+                    } catch (Throwable t) {
+                        showUpdateError("安装失败", t);
+                    }
+                });
+            } catch (Throwable t) {
+                runOnUiThread(() -> {
+                    pd.dismiss();
+                    showUpdateError("下载失败", t);
+                });
+            }
+        }).start();
+    }
+
+    private void showUpdateError(String title, Throwable t) {
+        String msg = t.getMessage() == null ? String.valueOf(t) : t.getMessage();
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(msg + "\n\n如果一直失败（国内访问 GitHub 的下载服务器常常不通），"
+                        + "可以到 Releases 页面用浏览器下载。")
+                .setPositiveButton("用浏览器打开", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(
+                                "https://github.com/vmware001/VitreLens/releases/latest")));
+                    } catch (Throwable ignored) {
+                    }
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private static String fmtSize(long b) {
+        if (b < 1024) return b + " B";
+        if (b < 1048576) return String.format(Locale.US, "%.0f KB", b / 1024.0);
+        return String.format(Locale.US, "%.1f MB", b / 1048576.0);
+    }
+
+    /** Release 正文是 Markdown，直接塞进对话框会满屏 ## 和 **，这里去掉最基本的标记 */
+    private static String plainNotes(String md) {
+        if (md == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String raw : md.split("\n")) {
+            String l = raw.trim();
+            if (l.isEmpty()) continue;
+            l = l.replaceAll("^#{1,6}\\s*", "");
+            l = l.replaceAll("^[-*+]\\s+", "· ");
+            l = l.replaceAll("^\\d+\\.\\s+", "");
+            l = l.replaceAll("^>\\s*", "");
+            l = l.replace("**", "").replace("__", "").replace("`", "");
+            sb.append(l).append('\n');
+        }
+        return sb.toString().trim();
     }
 
     /* ── 外部入口 ── */

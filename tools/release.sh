@@ -22,9 +22,14 @@ DRAFT=""
 [ "$1" = "--draft" ] && DRAFT="--draft"
 
 # 1. 备份本地图标（中途被打断也要还原，否则本地开发会丢图标）
+#    只备份 >1KB 的：上一次流程若被中断，local-logos 里可能残留 68 字节的占位图，
+#    把它当成「原图」备份下来，下次恢复就把真图标彻底冲掉了（踩过一次）。
 mkdir -p /tmp/vl_logo_bak
 rm -f /tmp/vl_logo_bak/*.png
-cp "$AND"/local-logos/*.png /tmp/vl_logo_bak/ 2>/dev/null || true
+for f in "$AND"/local-logos/*.png; do
+  [ -f "$f" ] || continue
+  [ "$(stat -c%s "$f")" -gt 1000 ] && cp "$f" /tmp/vl_logo_bak/
+done
 PYBIN0="C:/Users/esetp/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"
 restore_logos() {
   cp /tmp/vl_logo_bak/*.png "$AND"/local-logos/ 2>/dev/null || true
@@ -50,7 +55,7 @@ PLACEHOLDER
 for n in leica hasselblad hasselblad_h zeiss ricoh apple; do
   cp "$PH" "$AND/local-logos/$n.png" 2>/dev/null || true
 done
-( cd "$AND" && ./build.sh ) | grep -E "版本号|SIGNED"
+( cd "$AND" && KEEP_BUILD=1 ./build.sh ) | grep -E "版本号|SIGNED"
 VER=$(grep -o 'versionName="[^"]*"' "$AND"/app/AndroidManifest.xml | head -1 | cut -d'"' -f2)
 CODE=$(grep -o 'versionCode="[0-9]*"' "$AND"/app/AndroidManifest.xml | head -1 | grep -o '[0-9]*')
 mkdir -p "$AND/release"
@@ -108,6 +113,16 @@ else
   gh release create "v$VER" "$PUB" --title "VitreLens $VER" --notes-file "$NOTES" $DRAFT
 fi
 rm -f "$NOTES"
+
+# 核对发布包确实不含品牌图（408 = 6 张 1x1 占位图）
+"$PYBIN0" - "$PUB" <<'CHECK'
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+tot = sum(i.file_size for i in z.infolist() if 'logo_' in i.filename)
+print("  发布包内品牌图标合计 %d 字节（408 = 干净）" % tot)
+sys.exit(0 if tot < 1000 else 1)
+CHECK
+[ $? -ne 0 ] && echo "!! 发布包仍带着品牌图标，检查 local-logos"
 
 echo
 echo "=== 完成 ==="
