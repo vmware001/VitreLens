@@ -18,12 +18,12 @@ fi
 
 # ── 每次构建自动递增版本号；构建失败则回滚，避免白白吃掉一个版本号
 MANIFEST=app/AndroidManifest.xml
-cp "$MANIFEST" build/manifest.bak
+# 备份放在内存里。写到 build/manifest.bak 在 Windows 上偶发 "Device or resource busy"
+# （杀毒/索引进程正读着这个文件），构建会在最开头就失败。
+MANIFEST_BAK=$(cat "$MANIFEST")
 restore_manifest() {
-  if [ -f build/manifest.bak ]; then
-    cp build/manifest.bak "$MANIFEST"
-    echo "!! 构建失败，版本号已回滚"
-  fi
+  printf '%s\n' "$MANIFEST_BAK" > "$MANIFEST"
+  echo "!! 构建失败，版本号已回滚"
 }
 trap 'rc=$?; if [ $rc -ne 0 ]; then restore_manifest; fi' EXIT
 
