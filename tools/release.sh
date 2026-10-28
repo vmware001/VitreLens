@@ -74,9 +74,9 @@ if [ -n "$(git status --porcelain)" ]; then
   git add -A
   git -c core.autocrlf=false commit -q -m "发布 v$VER"
 fi
-$GIT push origin main 2>&1 | tail -1
+$GITP push origin main 2>&1 | tail -1
 
-NOTES=$(mktemp)
+NOTES="$AND/release/notes-v$VER.md"
 cat > "$NOTES" <<NOTE
 ## VitreLens $VER
 
@@ -122,7 +122,7 @@ tot = sum(i.file_size for i in z.infolist() if 'logo_' in i.filename)
 print("  发布包内品牌图标合计 %d 字节（408 = 干净）" % tot)
 sys.exit(0 if tot < 1000 else 1)
 CHECK
-[ $? -ne 0 ] && echo "!! 发布包仍带着品牌图标，检查 local-logos"
+if [ $? -ne 0 ]; then echo "!! 发布包仍带着品牌图标，检查 local-logos"; fi
 
 echo
 echo "=== 完成 ==="

@@ -61,8 +61,22 @@ echo "== 0.5/6 同步本地品牌图标 =="
 mkdir -p app/res/drawable-nodpi
 for n in leica hasselblad hasselblad_h zeiss ricoh apple; do
   if [ -f "local-logos/$n.png" ]; then
-    cp "local-logos/$n.png" "app/res/drawable-nodpi/logo_$n.png"
-    echo "  使用本地图标 logo_$n.png"
+    # Windows 上偶发复制失败（源文件刚被写过、句柄还没释放），
+    # 之前会静默留下 68 字节的占位图，导致"含图标的本地版"其实没有图标。
+    # 这里按大小校验，失败重试几次。
+    ok=0
+    for try in 1 2 3; do
+      cp "local-logos/$n.png" "app/res/drawable-nodpi/logo_$n.png" 2>/dev/null
+      if [ "$(stat -c%s "app/res/drawable-nodpi/logo_$n.png" 2>/dev/null)" = "$(stat -c%s "local-logos/$n.png")" ]; then
+        ok=1; break
+      fi
+      sleep 0.3
+    done
+    if [ "$ok" = "1" ]; then
+      echo "  使用本地图标 logo_$n.png"
+    else
+      echo "  !! 复制 logo_$n.png 失败（保持原有文件）"
+    fi
   elif [ ! -f "app/res/drawable-nodpi/logo_$n.png" ]; then
     "$PYBIN0" - "$n" <<'PLACEHOLDER'
 import sys, zlib, struct
