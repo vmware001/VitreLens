@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VitreLens 代码评审</title>
+<style>
+:root{
+  --bg:#0b0d10; --panel:#12151a; --panel2:#171b21; --line:#242a33;
+  --fg:#e6eaf0; --fg2:#a8b3c2; --fg3:#6f7b8b;
+  --accent:#5ac8fa; --accent2:#7ee787; --warn:#ffb454;
+  --mono:"JetBrains Mono","Cascadia Code",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:"Inter","Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  font-size:15px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:56px 28px 120px}
+.doc{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:52px 56px 64px;box-shadow:0 24px 60px rgba(0,0,0,.45)}
+h1{font-size:31px;line-height:1.35;margin:0 0 6px;letter-spacing:.3px;font-weight:650}
+h1+table{margin-top:26px}
+h2{font-size:21px;margin:52px 0 16px;padding-bottom:10px;border-bottom:1px solid var(--line);
+  font-weight:640;letter-spacing:.2px}
+h2:first-of-type{margin-top:36px}
+h3{font-size:16.5px;margin:32px 0 10px;color:#dfe7f2;font-weight:640}
+h4{font-size:15px;margin:24px 0 8px;color:var(--fg2)}
+p{margin:12px 0;color:#d3dae4}
+strong{color:#fff;font-weight:640}
+em{color:var(--fg2)}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid rgba(90,200,250,.3)}
+a:hover{border-bottom-color:var(--accent)}
+code{font-family:var(--mono);font-size:12.5px;background:#1c222b;color:#ffd9a8;
+  padding:2px 6px;border-radius:5px;border:1px solid #262e39;word-break:break-word}
+pre.code{position:relative;background:#0e1116;border:1px solid var(--line);border-radius:10px;
+  padding:18px 20px;overflow-x:auto;margin:16px 0}
+pre.code code{background:none;border:none;padding:0;color:#c9d6e4;font-size:12.6px;line-height:1.72}
+pre.code::before{content:attr(data-lang);position:absolute;top:0;right:0;
+  font-family:var(--mono);font-size:10px;color:var(--fg3);padding:5px 10px;
+  border-left:1px solid var(--line);border-bottom:1px solid var(--line);
+  border-radius:0 10px 0 8px;background:#12161c;letter-spacing:.5px}
+blockquote{margin:18px 0;padding:14px 20px;background:#131920;border-left:3px solid var(--accent);
+  border-radius:0 8px 8px 0;color:#c3cedb}
+blockquote p{margin:0}
+hr{border:none;border-top:1px solid var(--line);margin:34px 0}
+.tw{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13.2px;background:var(--panel2)}
+thead th{background:#1b222b;color:#cfd9e6;text-align:left;font-weight:640;
+  padding:11px 14px;border-bottom:1px solid #2a323d;white-space:nowrap}
+tbody td{padding:10px 14px;border-bottom:1px solid #1e242d;color:#c8d2de;vertical-align:top}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:#1a212a}
+ul,ol{margin:12px 0;padding-left:24px;color:#d3dae4}
+li{margin:6px 0}
+li::marker{color:var(--accent)}
+.meta{color:var(--fg3);font-size:12px;letter-spacing:.4px;margin-bottom:26px}
+@media (max-width:720px){.doc{padding:28px 20px 40px}.wrap{padding:20px 12px 60px}h1{font-size:24px}}
+@media print{body{background:#fff;color:#111}.doc{box-shadow:none;border:none;padding:0}
+  pre.code code,code{color:#111}thead th{background:#eee;color:#111}tbody td{color:#111}}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="doc">
+<div class="meta">CODE REVIEW · commit ecb534c · 2026-10-28</div>
+<h1 id="VitreLens-代码评审">VitreLens 代码评审</h1>
+<div class="tw"><table><thead><tr><th>项</th><th>内容</th></tr></thead><tbody><tr><td>评审对象</td><td><code>D:\data\code\liquidglass</code>（Android 4,198 行 Java + Web 3,614 行 JS）</td></tr><tr><td>评审版本</td><td>commit <code>ecb534c</code>，APK v1.35 / versionCode 36</td></tr><tr><td>评审方式</td><td>全量源码通读 + 模拟器实测（Android 12L / SDK 32，<code>127.0.0.1:16384</code>）+ 产物二进制校验</td></tr><tr><td>日期</td><td>2026-10-28</td></tr></tbody></table></div>
+<p>结论分三档：<strong>P0 会产生错误结果或丢数据</strong>、<strong>P1 稳定性与资源问题</strong>、<strong>P2 代码卫生</strong>。每条标注「已实测」或「读码推断」。</p>
+<hr/>
+<h2 id="零-先说做对的部分">零、先说做对的部分</h2>
+<p>避免只列问题造成误判，以下设计值得保留：</p>
+<ul>
+<li><strong>元数据层是全项目最扎实的部分</strong>。<code>Meta.java</code> 刻意不依赖 Android API，<code>run-tests.sh</code> 用纯 JVM 跑 69 条断言，覆盖 JPEG/HEIC 解析、ICC 去重、MPF 偏移重算、XMP <code>Item:Length</code> 改写、HDR 尾块逐字节搬运。实测三张样本（ProXDR 静态图 / 动态照片 / HEIC）导出后，MPF 的 <code>size</code>/<code>offset</code> 与新文件长度<strong>逐字节自洽</strong>，增益图字节完全一致。这块不需要动。</li>
+<li><strong>玻璃着色器的物理建模是对的</strong>。用解析高度场代替网格、<code>refract</code> 走厚度、三通道色散、<code>clamp(2·ior−2)</code> 修正粗糙度，与 three.js 的对应关系在注释里逐条写明。实测玻璃、色散、投影均正常渲染。</li>
+<li><strong>失败降级有意识</strong>。GL 初始化失败 → 只出文字；视频转码失败 → 照片照出、弹窗说明原因；导出后回读自检增益图。这些都比同类工具做得好。</li>
+</ul>
+<p>下面开始是问题。</p>
+<hr/>
+<h2 id="一-P0-会产生错误结果或丢数据">一、P0：会产生错误结果或丢数据</h2>
+<h3 id="P0-1-HDR-动态照片的视频被按-SDR-BT-601-处理-色彩错误且-HDR-丢失">P0-1　HDR 动态照片的视频被按 SDR + BT.601 处理，色彩错误且 HDR 丢失</h3>
+<p><strong>位置</strong>：<code>VideoWatermark.java:440-495</code>（<code>yuvToBitmap</code>）、<code>:136-141</code>（编码器 configure）</p>
+<p><strong>已实测</strong>。用项目自带的 <code>dyn8.jpg</code> 走完整导出流程，从容器里抽出视频段做二进制比对：</p>
+<pre class="code" data-lang="text"><code>输入视频 avc1 colr:  nclx primaries=9  transfer=18  matrix=9   full_range=0
+输出视频 avc1 colr:  nclx primaries=1  transfer=1   matrix=1   full_range=0
+                     (BT.2020 primaries / HLG 传输)  →  (BT.709 / SDR gamma)</code></pre>
+<p>输入是 <strong>BT.2020 + HLG</strong>（H.273：primaries=9、transfer=18 即 HLG、matrix=9），而 <code>yuvToBitmap</code> 用的是写死的 <strong>BT.601 有限范围</strong>系数：</p>
+<pre class="code" data-lang="java"><code>int c = Y - 16;                       // limited range 偏移
+int r = (298 * c + 409 * e + 128) &gt;&gt; 8;   // BT.601 系数
+int g = (298 * c - 100 * d - 208 * e + 128) &gt;&gt; 8;
+int b = (298 * c + 516 * d + 128) &gt;&gt; 8;</code></pre>
+<p>三重错误叠加：</p>
+<ol>
+<li><strong>矩阵用错</strong>：BT.2020 的 YUV→RGB 系数与 BT.601 不同（1.4746/0.1646/0.5714 vs 1.402/0.3441/0.7139），红绿方向偏移最明显；</li>
+<li><strong>传输函数被丢弃</strong>：HLG 需要 OOTF 反变换才能映射到显示亮度，直接当 gamma 编码的 YUV 处理 → 画面发灰、对比度塌陷、高光细节丢失；</li>
+<li><strong>输出标签写死 BT.709</strong>：编码器没设 <code>KEY_COLOR_STANDARD/TRANSFER/RANGE</code>，MediaCodec 默认填 709/SDR，播放器不会做任何补偿。</li>
+</ol>
+<p>这正是目标用户群（OPPO / 小米旗舰的 HDR 实况照片）最常见的素材。而状态栏还显示 <code>ProXDR ✓</code>——照片的增益图确实保住了，但<strong>视频段已经变成偏色的 SDR</strong>，用户不会察觉。</p>
+<p><strong>修复方向</strong>（按投入排序）：</p>
+<ul>
+<li><strong>最小改动</strong>：从 <code>MediaFormat</code> 读源色彩信息，至少把矩阵选对，并把编码器标签写成与实际一致：</li>
+</ul>
+<pre class="code" data-lang="java"><code>int std = getInt(vf, MediaFormat.KEY_COLOR_STANDARD, -1);   // 1=BT709 2=BT601_NTSC 4=BT2020
+int range = getInt(vf, MediaFormat.KEY_COLOR_RANGE, -1);    // 1=limited 2=full
+// 选系数矩阵；BT.2020 → 1.4746/0.1646/0.5714
+ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, std &gt; 0 ? std : 1);
+ef.setInteger(MediaFormat.KEY_COLOR_RANGE, range &gt; 0 ? range : 1);</code></pre>
+<ul>
+<li><strong>正确做法</strong>：HLG/BT.2020 源先做 tone mapping 到 SDR 再编码（否则即使标签对了，SDR 播放器上依然过曝）；或者保留 HLG，用 <code>KEY_COLOR_TRANSFER=3 (HLG)</code> 编码并把 profile 提到 High10。前者实现简单、兼容性好，建议作为默认；后者作为开关。</li>
+</ul>
+<ul>
+<li><strong>不建议</strong>继续用"解不出来就报错"的策略：这条路径现在<strong>不报错</strong>，静默产出错色视频，比失败更糟。</li>
+</ul>
+<hr/>
+<h3 id="P0-2-编辑列表-elst-丢失-音画同步偏移-100ms">P0-2　编辑列表（elst）丢失，音画同步偏移 100ms</h3>
+<p><strong>位置</strong>：<code>VideoWatermark.java:305-356</code>（重新封装）</p>
+<p><strong>已实测</strong>。解析两条 MP4 的 <code>moov/trak/edts/elst</code>：</p>
+<pre class="code" data-lang="text"><code>输入：video  elst[0] segdur=3167ms  media_time=100ms     ← 跳过前 100ms
+      audio  elst[0] EMPTY 70ms, elst[1] 3072ms          ← 音频延迟 70ms
+
+输出：video  （无 edts/elst）                             ← 偏移丢失
+      audio  elst[0] EMPTY 70ms, elst[1] 3072ms          ← 保留</code></pre>
+<p>音频的 70ms 延迟被 MediaMuxer 重建了（因为样本 PTS 保留了偏移），但视频的 <code>media_time=100ms</code> 没有——解码器把被 elst 裁掉的前 3 帧也解出来并写进了新文件，于是<strong>视频内容整体提前 100ms，相对音频产生 −100ms 偏移</strong>。</p>
+<p>对 3 秒的实况照片，100ms 约等于 3 帧，属于"能看出来"的程度（拍手、说话口型）。长度越短占比越大。</p>
+<p><strong>根因</strong>：<code>MediaMuxer</code> 不会继承源文件的 edit list，需要手动处理。两种修法：</p>
+<ul>
+<li><strong>推荐</strong>：解码后按 <code>elst.media_time</code> 丢弃早于该时刻的帧（<code>if (pts &lt; editStartUs) { release; continue; }</code>），时间轴从 0 重新起算；</li>
+<li>或者封装后用 <code>MediaMuxer</code> 之外的工具补写 <code>elst</code>（Android 没有公开 API，需要自己拼 box，不建议）。</li>
+</ul>
+<p>顺带：<code>basePts</code> 在 <code>:213</code> 只从视频首帧取，<code>:336</code> 却同时用于音频。当视频首帧 PTS ≠ 0 时，音频会被错误平移同样大小。当前样本首帧 PTS 恰好为 0，所以没暴露。建议视频、音频各自减去自己的首样本 PTS。</p>
+<hr/>
+<h3 id="P0-3-连续选图存在竞态-可能把-A-图的元数据套到-B-图上">P0-3　连续选图存在竞态，可能把 A 图的元数据套到 B 图上</h3>
+<p><strong>位置</strong>：<code>MainActivity.java:306-353</code>（<code>loadImage</code>）、<code>:365-367</code>（<code>decodeFull</code> 读字段）</p>
+<p><strong>读码推断</strong>（触发条件明确，但未构造复现）。</p>
+<p><code>loadImage</code> 在后台线程里写三个<strong>实例字段</strong>：<code>srcUri</code>、<code>meta</code>、<code>photo</code>；而 <code>decodeFull</code> 不接收参数，直接读 <code>this.srcUri</code>：</p>
+<pre class="code" data-lang="java"><code>private void loadImage(Uri uri) {
+    new Thread(() -&gt; {
+        srcUri = uri;                       // ← 字段
+        meta = Meta.parse(...);
+        ...
+        Bitmap bmp = decodeFull(bounds.outWidth, bounds.outHeight);  // ← 读 this.srcUri</code></pre>
+<p>用户在加载过程中再点一次"选择"（或外部 <code>SEND</code> 意图进来），两个线程并行：</p>
+<ol>
+<li>线程 A 设 <code>srcUri=A</code>，开始解码大图（几百 ms）；</li>
+<li>线程 B 设 <code>srcUri=B</code>、<code>meta=B 的</code>，解码完成，界面显示 B；</li>
+<li>线程 A 的 <code>decodeFull</code> 这时读到 <code>srcUri=B</code>，解出 B 的像素，却配着 A 的 <code>meta</code> 写回 <code>photo</code>/<code>photoW</code>。</li>
+</ol>
+<p>结果：<strong>画面是 B，机型/参数/时间是 A 的</strong>，导出时 <code>Meta.assemble</code> 还会用 B 的像素 + A 的 EXIF 拼文件。用户很难发现，但产出的照片元数据是错的。</p>
+<p><strong>修复</strong>：把 <code>uri</code> 作为参数传下去，并在开始时取一个自增 token，回调前校验：</p>
+<pre class="code" data-lang="java"><code>private int loadSeq = 0;
+
+private void loadImage(Uri uri) {
+    final int seq = ++loadSeq;
+    new Thread(() -&gt; {
+        Meta m = Meta.parse(...);          // 局部变量
+        Bitmap bmp = decodeFull(uri, m, w, h);
+        if (seq != loadSeq) { bmp.recycle(); return; }   // 已被更新的请求取代
+        ...
+    }).start();
+}</code></pre>
+<hr/>
+<h3 id="P0-4-fileSize-取不到长度时-整个尾部-增益图-视频-静默丢失">P0-4　<code>fileSize()</code> 取不到长度时，整个尾部（增益图 + 视频）静默丢失</h3>
+<p><strong>位置</strong>：<code>Meta.java:147</code>、<code>MainActivity.java:423-443</code></p>
+<p><strong>读码推断</strong>。</p>
+<pre class="code" data-lang="java"><code>if (fileLen &gt; 0) m.trailerLength = Math.max(0, fileLen - m.eoiEnd);</code></pre>
+<p><code>fileSize()</code> 依次尝试 <code>OpenableColumns.SIZE</code> → <code>AssetFileDescriptor.getLength()</code>，两者都可能返回 −1（<code>UNKNOWN_LENGTH</code>，管道类 provider 常见）。一旦为 −1：</p>
+<ul>
+<li><code>trailerLength = 0</code> → <code>motion=false</code>、HDR 尾块判定跳过、<code>trailerVideoLength=0</code>；</li>
+<li>导出时 <code>assemble</code> 里 <code>if (orig != null &amp;&amp; trailerLength &gt; 0)</code> 不成立 → <strong>尾部一个字节都不写</strong>；</li>
+<li>自检读回输出，发现 <code>hdr=false</code>，提示"⚠ 增益图丢失"——但<strong>照片已经写进相册了</strong>，动态照片变成静态图。</li>
+</ul>
+<p><strong>修复</strong>：不要依赖外部长度。<code>Meta.parse</code> 已经在完整扫描到 EOI，让它在流末尾自行统计总长即可（或用 <code>ParcelFileDescriptor.statSize</code>）：</p>
+<pre class="code" data-lang="java"><code>// parse() 末尾：如果 fileLen &lt;= 0，用已读字节数 + 剩余字节数补出真实长度</code></pre>
+<hr/>
+<h3 id="P0-5-XMP-超-64KB-时容器长度改写失败-但视频仍被替换">P0-5　XMP 超 64KB 时容器长度改写失败，但视频仍被替换</h3>
+<p><strong>位置</strong>：<code>Meta.java:255-268</code>（<code>rebuildXmpSegment</code> 超限返回 null）、<code>:627-642</code>（调用处静默忽略）</p>
+<p><strong>读码推断</strong>。<code>rebuildXmpSegment</code> 在 <code>payloadLen + 2 &gt; 65533</code> 时返回 <code>null</code>，<code>assemble</code> 里：</p>
+<pre class="code" data-lang="java"><code>byte[] seg = rebuildXmpSegment(patched);
+if (seg != null) { /* 替换 XMP 段 */ }     // null 就什么都不做</code></pre>
+<p>随后仍然把新视频写进尾部。此时 <strong>XMP 里的 <code>MotionPhoto Item:Length</code> 是旧长度，实际视频是新长度</strong>，播放器按旧长度取流 → 截断或读到脏数据。属于容器级不一致，比"视频没加上水印"更糟。</p>
+<p><strong>修复</strong>：<code>rebuildXmpSegment</code> 失败时<strong>放弃替换视频</strong>（回退为原样搬运），并把原因回传：</p>
+<pre class="code" data-lang="java"><code>if (replaceVideo &amp;&amp; xmpText != null) {
+    String patched = replaceItemLength(...);
+    byte[] seg = patched == null ? null : rebuildXmpSegment(patched);
+    if (seg == null) { replaceVideo = false; videoWarn = "XMP 段过大，视频保持原样"; }
+    else keepSegs.set(xmpIdx, seg);
+}</code></pre>
+<hr/>
+<h2 id="二-P1-稳定性-内存与资源">二、P1：稳定性、内存与资源</h2>
+<h3 id="P1-1-预览位图逐次泄漏-长时间调参会-OOM">P1-1　预览位图逐次泄漏，长时间调参会 OOM</h3>
+<p><strong>位置</strong>：<code>MainActivity.java:556</code>、<code>:567-594</code></p>
+<pre class="code" data-lang="java"><code>Bitmap out = composer.composeOn(work, work.getWidth(), work.getHeight(), st);
+lastComposed = out;          // ← 旧的 lastComposed 从未 recycle</code></pre>
+<p>每次预览（滑杆拖动 70ms 去抖一次）都替换 <code>lastComposed</code>，旧位图交给 GC。1400px 预览约 8MB，连续拖动 30 秒可以制造上百 MB 垃圾；<code>preview.setImageBitmap(show)</code> 还持有上一张的引用。</p>
+<p><code>closeUp()</code> 在 <code>ACTION_MOVE</code> 里每次新建一张裁剪位图，同样不回收：</p>
+<pre class="code" data-lang="java"><code>case MotionEvent.ACTION_MOVE: {
+    ...
+    updateCloseUp();          // → Bitmap.createBitmap(full, ...) 每帧一张</code></pre>
+<p><strong>修复</strong>：替换前回收，且特写视图复用一张位图：</p>
+<pre class="code" data-lang="java"><code>Bitmap old = lastComposed;
+lastComposed = out;
+if (old != null &amp;&amp; old != out) old.recycle();</code></pre>
+<h3 id="P1-2-GlassRenderer-从不释放-EGL-上下文与纹理泄漏">P1-2　<code>GlassRenderer</code> 从不释放，EGL 上下文与纹理泄漏</h3>
+<p><strong>位置</strong>：<code>GlassRenderer.java</code>（全类无 <code>release()</code>）、<code>MainActivity.java:179-183</code>（<code>onDestroy</code>）</p>
+<p><code>onDestroy</code> 只 <code>glQueue.shutdownNow()</code>，EGLDisplay/Context/Surface、FBO、3 个纹理全部未销毁。</p>
+<p>放大问题的因素：<code>AndroidManifest.xml</code> 的 <code>configChanges</code> 只声明了 <code>orientation|screenSize|keyboardHidden</code>（<code>0x4a0</code>）。<strong>系统深色模式切换（uiMode）、字体大小、语言变化都不在其中</strong> → 这些操作会重建 Activity，每次泄漏一个 GL 上下文。</p>
+<p><strong>修复</strong>：</p>
+<pre class="code" data-lang="java"><code>void release() {
+    if (display != EGL14.EGL_NO_DISPLAY) {
+        EGL14.eglMakeCurrent(display, EGLSurface.EGL_NO_SURFACE, EGLSurface.EGL_NO_SURFACE, EGLContext.EGL_NO_CONTEXT);
+        int[] t = {texPhoto, texBlur, texBlur2}, f = {fbo};
+        GLES20.glDeleteTextures(3, t, 0);
+        GLES20.glDeleteFramebuffers(1, f, 0);
+        EGL14.eglDestroySurface(display, surface);
+        EGL14.eglDestroyContext(display, context);
+        EGL14.eglTerminate(display);
+    }
+    display = EGL14.EGL_NO_DISPLAY;
+}</code></pre>
+<p>并在 <code>configChanges</code> 里补 <code>uiMode|density|fontScale|locale</code>，从根上减少重建。</p>
+<h3 id="P1-3-scaleInto-换尺寸时不回收旧模糊位图">P1-3　<code>scaleInto</code> 换尺寸时不回收旧模糊位图</h3>
+<p><strong>位置</strong>：<code>GlassRenderer.java:191-201</code></p>
+<pre class="code" data-lang="java"><code>if (dst == null || dst.getWidth() != w || dst.getHeight() != h) {
+    dst = Bitmap.createBitmap(w, h, ARGB_8888);   // ← 旧 dst 直接丢弃
+}</code></pre>
+<p>裁切块尺寸随水印宽度变化而变化（拖"水印宽度"滑杆就会变），每变一次泄漏两张。<strong>修复</strong>：先 <code>if (dst != null &amp;&amp; 尺寸不符) dst.recycle();</code>。</p>
+<h3 id="P1-4-render-每次做两遍全尺寸字节拷贝">P1-4　<code>render()</code> 每次做两遍全尺寸字节拷贝</h3>
+<p><strong>位置</strong>：<code>GlassRenderer.java:277-290</code></p>
+<pre class="code" data-lang="java"><code>ByteBuffer buf = ByteBuffer.allocateDirect(w * h * 4);
+GLES20.glReadPixels(..., buf);
+byte[] px = buf.array();          // 第一遍
+byte[] out = new byte[px.length]; // 第二遍
+for (...) System.arraycopy(...);  // 逐行翻转</code></pre>
+<p>一块 4096×2200 的裁切区 = 36MB × 2 的瞬时分配。<strong>修复</strong>：原地翻转（首尾行交换），省掉 <code>out</code>；或用一块可复用的 <code>byte[]</code> 成员变量。另外 <code>buf.array()</code> 依赖 <code>allocateDirect</code> 返回的缓冲区可访问数组（当前 Android 实现可用，但属于实现细节），改成 <code>buf.get(px)</code> 更稳妥。</p>
+<h3 id="P1-5-initLogos-被重复调用两次-24-张位图里有-12-张成为垃圾">P1-5　<code>initLogos</code> 被重复调用两次，24 张位图里有 12 张成为垃圾</h3>
+<p><strong>位置</strong>：<code>MainActivity.java:144-166</code></p>
+<p>两段<strong>完全相同</strong>的 <code>try { decode 6 张 PNG → initLogos }</code> 代码块紧邻。第二次调用把 <code>logoBmps</code> 整个换掉，第一次解出的 6 张原图 + 6 张掩码图全部失联；<code>buildMask</code> 产出的掩码位图也从未回收原图。</p>
+<p><strong>修复</strong>：删掉第二段；<code>initLogos</code> 里对旧数组做回收。</p>
+<h3 id="P1-6-视频路径按-4K-计算会占-100MB-以上临时位图">P1-6　视频路径按 4K 计算会占 100MB 以上临时位图</h3>
+<p><strong>位置</strong>：<code>VideoWatermark.java:154-157</code></p>
+<pre class="code" data-lang="java"><code>Bitmap frameRaw  = Bitmap.createBitmap(srcW, srcH, ARGB_8888);   // 4K: 33MB
+Bitmap frameWork = rotation == 0 ? frameRaw : createBitmap(outW, outH, ...); // 再 33MB
+int[] rowPixels  = new int[srcW * srcH];                          // 再 33MB</code></pre>
+<p>4K 实况照片视频（3840×2160）三项合计约 100MB，叠加 <code>largeHeap</code> 与照片位图，OOM 概率不低。<strong>修复</strong>：<code>rowPixels</code> 改为按行（<code>setPixels(line, 0, W, 0, y, W, 1)</code>），<code>frameWork</code> 仅在 <code>rotation != 0</code> 时分配（已经是），但可以把 <code>rowPixels</code> 减到一行。</p>
+<h3 id="P1-7-导出没有防重入-连点会排队产出多份">P1-7　导出没有防重入，连点会排队产出多份</h3>
+<p><strong>位置</strong>：<code>MainActivity.java:598-604</code></p>
+<p><code>export()</code> 直接 <code>glQueue.execute(...)</code>，按钮不置灰。连点三次 → 三次完整导出排队（含三次视频转码），每次弹一个 <code>ProgressDialog</code>，相册里出现三张几乎一样的图。<strong>修复</strong>：进入时 <code>btnExport.setEnabled(false)</code>，<code>finally</code> 里恢复；或用 <code>AtomicBoolean busy</code> 守卫。</p>
+<h3 id="P1-8-ProgressDialog-与-Activity-生命周期脱钩">P1-8　<code>ProgressDialog</code> 与 Activity 生命周期脱钩</h3>
+<p><strong>位置</strong>：<code>MainActivity.java:248/307/602</code>，回调里 <code>pd.dismiss()</code></p>
+<p>后台线程持有 <code>ProgressDialog</code> 引用，Activity 若在导出期间被销毁（返回键、系统回收），<code>pd.dismiss()</code> 会抛 <code>BadTokenException</code> 或泄漏窗口。<code>setPdMessage</code> 里 catch 了 <code>Exception</code>，但 <code>dismiss()</code> 没有。<strong>修复</strong>：改用 <code>isFinishing()/isDestroyed()</code> 判断，或换成不依赖 Activity 的进度通知。</p>
+<h3 id="P1-9-parseExif-缺少边界检查-损坏的-EXIF-会让整段元数据失效">P1-9　<code>parseExif</code> 缺少边界检查，损坏的 EXIF 会让整段元数据失效</h3>
+<p><strong>位置</strong>：<code>Meta.java:519-524</code></p>
+<pre class="code" data-lang="java"><code>int ifd = readInt(t, 4, le);
+int n = readShort(t, ifd, le);      // ifd 可能越界 → AIOOBE</code></pre>
+<p>外层 <code>catch (Exception ignored)</code> 兜住，后果是 <code>make/model/date/focal</code> 全部为空，水印只剩默认文案——用户看到的是"读不出机型"，而不是"EXIF 损坏"。<strong>修复</strong>：<code>if (ifd &lt; 8 || ifd + 2 &gt; t.length) return;</code>，并对每个 entry 的 <code>vo + size</code> 做 clamp（已有部分）。</p>
+<h3 id="P1-10-MPF-条目多于两个时-替换视频后-size-字段不更新-潜在">P1-10　MPF 条目多于两个时，替换视频后 size 字段不更新（潜在）</h3>
+<p><strong>位置</strong>：<code>Meta.java:672-694</code></p>
+<pre class="code" data-lang="java"><code>writeInt(mpfPatched, mpfSizePos[0], trailerStart, le);
+long cursor = trailerStart;
+for (int m = 1; m &lt; mpfOffPos.length; m++) {
+    writeInt(mpfPatched, mpfOffPos[m], cursor - tiffAbs, le);
+    if (m &lt; mpfSizes.length &amp;&amp; mpfSizes[m] &gt; 0) cursor += mpfSizes[m];   // ← 用原始 size
+}</code></pre>
+<p>当前样本 MPF 只有两个条目（主图 + 增益图），视频不在 MPF 里，所以没暴露。若某厂商把视频也登记为 MPF 条目（Google 旧式 MicroVideo），替换后该条目的 <code>size</code> 仍是旧值，其后条目的偏移也会错。<strong>修复</strong>：把被替换的那一条的 size 写成 <code>newVideoLen</code>，并在循环里用更新后的值累加。</p>
+<h3 id="P1-11-导出的-EXIF-缩略图仍是旧图">P1-11　导出的 EXIF 缩略图仍是旧图</h3>
+<p><strong>位置</strong>：<code>Meta.java:644-664</code>（整段复制 EXIF）</p>
+<p>IFD1 缩略图随 EXIF 段原样搬运，内容是没有水印的旧图。多数相册用主图，但文件管理器/某些旧版相册会先显示 EXIF 缩略图。<strong>修复</strong>：要么重写 IFD1（成本高），要么提供"移除缩略图"选项。</p>
+<hr/>
+<h2 id="三-P2-代码卫生">三、P2：代码卫生</h2>
+<div class="tw"><table><thead><tr><th>编号</th><th>位置</th><th>问题</th></tr></thead><tbody><tr><td>P2-1</td><td><code>WatermarkPainter.java:32</code></td><td>注释 <code>// 0 无 1 徕卡 2 哈苏 3 蔡司 4 理光</code> 与实现不符（实际 3=哈苏H、4=蔡司、5=理光、6=苹果、7=自定义）</td></tr><tr><td>P2-2</td><td><code>WatermarkPainter.java:38-41</code></td><td><code>glassHeightPct</code> 的注释被复制到了 <code>gapPct</code> 上</td></tr><tr><td>P2-3</td><td><code>WatermarkPainter.java:305/352</code></td><td><code>drawLiquidText</code>/<code>drawFrostText</code> 的 <code>u</code> 参数从未使用</td></tr><tr><td>P2-4</td><td><code>MainActivity.java:192</code></td><td><code>getParcelableExtra(EXTRA_STREAM)</code> 在 API 33 起废弃，targetSdk 34 应改用 <code>getParcelableExtra(name, Uri.class)</code></td></tr><tr><td>P2-5</td><td><code>VideoWatermark.java:110</code></td><td><code>totalBytes</code> 计算后从未使用</td></tr><tr><td>P2-6</td><td><code>res/raw/glass_frag.glsl</code></td><td>4.6KB 死资源，<code>R.raw.glass_frag</code> 无任何引用，可删除</td></tr><tr><td>P2-7</td><td><code>MainActivity.java:194-196</code></td><td><code>srcPath</code> extra 可指向任意本地路径，构成任意文件读取入口（仅限本应用有权限的文件）。建议限制为 <code>getExternalFilesDir()</code> 或去掉该入口</td></tr><tr><td>P2-8</td><td><code>MainActivity.java:187-204</code></td><td>未处理 <code>ACTION_SEND_MULTIPLE</code>；外部意图无来源校验（<code>exported=true</code> 且无权限保护）</td></tr><tr><td>P2-9</td><td><code>VideoWatermark.java:532-542</code></td><td><code>extractRange</code> 的 skip 在 provider 不支持时退化为逐字节 <code>read()</code>，30MB 偏移会非常慢。建议用 <code>ParcelFileDescriptor</code> + <code>FileChannel.position()</code></td></tr><tr><td>P2-10</td><td><code>Meta.java:164-170</code></td><td><code>xmpText</code> 用字符索引切分 <code>xmpBytes</code> 的字节数组（<code>System.arraycopy(xmpBytes, 0, prefix, 0, xmlAt)</code>）。当前 XMP 前缀是纯 ASCII 所以正确，一旦前缀含非 ASCII 就会截错</td></tr><tr><td>P2-11</td><td><code>Meta.java:760-765</code></td><td>XMP 段识别用 <code>s[4]=='h' &amp;&amp; s[5]=='t'</code>，过弱；建议匹配完整前缀 <code>http://ns.adobe.com/xap/1.0/</code></td></tr><tr><td>P2-12</td><td><code>ControlPanel.java:296</code></td><td><code>deserialize</code> 对损坏数据静默失败，无任何提示</td></tr><tr><td>P2-13</td><td><code>ControlPanel.java:218-231</code></td><td>套用预设后 <code>activePreset</code> 不会因手动改滑杆而失效，胶囊仍高亮"正在用"，与实际参数不符</td></tr></tbody></table></div>
+<hr/>
+<h2 id="四-安全与隐私">四、安全与隐私</h2>
+<p><strong>结论：没有可利用的高危面。</strong> 无网络权限、无网络代码、无第三方 SDK、无动态加载、无设备标识采集，<code>allowBackup=false</code>。<code>exported=true</code> 的 Activity 只接收 <code>image/*</code>，最坏情况是第三方应用让它把一张用户自己的图复制进相册。</p>
+<p>需要留意的两点：</p>
+<ol>
+<li><strong><code>srcPath</code> 任意路径读取</strong>（P2-7）。虽然只能读应用有权限的文件，但它把"外部应用可指定任意路径"这件事暴露了出来，建议移除或加白名单。</li>
+<li><strong>临时文件残留</strong>。<code>buildWatermarkedVideo</code> 的失败路径中 <code>vl_out.mp4</code> 的删除依赖调用方，<code>vl_src.mp4</code> 在 <code>extractRange</code> 抛异常时不会删（<code>finally</code> 里只删 <code>tmpIn</code>，但 <code>extractRange</code> 在 try 外）。建议统一在 <code>finally</code> 清理 <code>getCacheDir()</code> 下的 <code>vl_*.mp4</code>。</li>
+</ol>
+<hr/>
+<h2 id="五-优化建议-不改行为-只提效率与画质">五、优化建议（不改行为，只提效率与画质）</h2>
+<h3 id="5-1-视频合成-把-每帧全量重算-降级为-每帧只采样">5.1 视频合成：把"每帧全量重算"降级为"每帧只采样"</h3>
+<p>当前每帧都跑一次完整链路：<code>layout()</code>（最多 9 次 <code>Paint</code> 分配 + 文本测量）→ <code>composeOn</code> → <code>GlassRenderer.render</code>（<code>glReadPixels</code> 同步阻塞）。实测 648×864 / 93 帧耗时约 1.1 秒，折算 4K 会到 30 秒量级。</p>
+<p>可行的分层优化（收益递增）：</p>
+<ol>
+<li><strong>缓存 layout</strong>：整段视频的 <code>Style</code> 不变，<code>WatermarkPainter.layout(W,H,st)</code> 只需算一次，把结果传入 <code>composeOn</code> 的重载。</li>
+<li><strong>缓存文字层</strong>：文字与 Logo 与背景无关，可预渲染成一张带 alpha 的图层，每帧只做 <code>drawBitmap</code>。</li>
+<li><strong>缓存玻璃几何</strong>：<code>sdRoundBox</code> 的 SDF、<code>profile(d)</code> 高度场、法线方向都只依赖几何与 uniform，与背景无关。预计算一张 RGBA 的"位移图 + 法线图"，着色器每帧只做纹理采样与混合，可省掉最贵的分支。</li>
+<li><strong>避免 <code>glReadPixels</code> 往返</strong>：视频路径其实不需要回读——可以直接把解码帧作为纹理渲染到编码器输入 Surface，省掉"GL→Bitmap→GL"的两跳。这是最大的架构级优化，能把 4K 视频处理压到接近实时。</li>
+</ol>
+<h3 id="5-2-图像路径">5.2 图像路径</h3>
+<ul>
+<li><code>ByteArrayOutputStream(1&lt;&lt;22)</code> + <code>toByteArray()</code> 会在峰值再复制一份完整 JPEG（50MP 图约 20MB）。可改为先写临时文件再流式拼装，或让 <code>assemble</code> 接受 <code>OutputStream</code> 分段写入。</li>
+<li><code>Meta.parse</code> 为了定位 EOI 会把整个文件读一遍，而 <code>loadImage</code> 之后 <code>ImageDecoder</code> 还会再读一遍。若能在读到 SOS 后按文件长度反推 EOI（尾部长度已知时），可以省一次全文件 IO。</li>
+<li><code>makeBackdrop</code> 用 <code>140px → 420px</code> 两步缩放做模糊，成本低但放大后有明显块状。可改用 <code>RenderScript</code>/<code>RenderEffect</code>（API 31+）的 <code>createBlurEffect</code>，或一次 <code>Bitmap.createScaledBitmap</code> 到 420 宽再轻度高斯。</li>
+</ul>
+<h3 id="5-3-结构">5.3 结构</h3>
+<ul>
+<li><code>MainActivity</code> 808 行承担了载入、预览、特写、导出、视频编排五件事。建议拆出 <code>ExportTask</code>（导出流程 + 进度）与 <code>PhotoSession</code>（当前图的状态：uri/meta/photo/dirty），顺带解决 P0-3 的字段竞态。</li>
+<li><code>Style</code> 是可变对象且被多线程读（<code>copy()</code> 传值已经规避了大部分问题），但 <code>layout()</code> 里会写 <code>st.name = ""</code> 这种副作用，建议改成局部变量。</li>
+</ul>
+<hr/>
+<h2 id="六-可以新增的功能">六、可以新增的功能</h2>
+<p>按"实现成本 / 用户价值"排序，前五项建议优先：</p>
+<div class="tw"><table><thead><tr><th>#</th><th>功能</th><th>说明</th><th>成本</th></tr></thead><tbody><tr><td>1</td><td><strong>批量导出</strong></td><td>多选照片，套用同一套参数一次导出。当前一次只能处理一张，而"给一组照片统一加同款水印"是这类工具的核心场景</td><td>中</td></tr><tr><td>2</td><td><strong>完整预设（含文案与版式）</strong></td><td>现在 <code>serialize()</code> 只存 14 个玻璃参数，机型名/副标题/Logo/字体/版式都不存。用户每次换图都要重填</td><td>低</td></tr><tr><td>3</td><td><strong>拖动水印位置</strong></td><td>现在只有"左/中/右 + 距底高度"。直接在预览上拖拽面板，是最符合直觉的交互（<code>Panel.x/y</code> 已经是自由坐标）</td><td>中</td></tr><tr><td>4</td><td><strong>导出后直接分享</strong></td><td>导出完成弹 <code>ACTION_SEND</code>，省掉"去相册找图"这一步</td><td>低</td></tr><tr><td>5</td><td><strong>HDR 视频的 tone mapping 开关</strong></td><td>配合 P0-1，"保持 HDR（HLG）/ 转为 SDR"二选一，并给出预览对比</td><td>中高</td></tr><tr><td>6</td><td><strong>水印倾斜/旋转</strong></td><td>现在只有 <code>skew</code>（斜体），没有整体旋转。适合斜置水印</td><td>低</td></tr><tr><td>7</td><td><strong>水印透明度与混合模式</strong></td><td><code>u_trans</code> 控制的是玻璃透射，不是整体不透明度</td><td>低</td></tr><tr><td>8</td><td><strong>导出格式选择</strong></td><td>PNG（无损）/ WebP / AVIF；q100 JPEG 对纯色块仍会有振铃</td><td>低</td></tr><tr><td>9</td><td><strong>机型/参数手动编辑</strong></td><td>现在参数只能从 EXIF 读或手填字符串，可提供"焦距/光圈/快门/ISO 分字段输入 + 自动格式化"</td><td>低</td></tr><tr><td>10</td><td><strong>撤销/重做</strong></td><td>调参过程容易调飞，尤其玻璃参数有 13 个</td><td>中</td></tr><tr><td>11</td><td><strong>浅色主题</strong></td><td>界面硬编码深色。补 <code>values-night</code> 反而更简单（当前是"永远深色"）</td><td>中</td></tr><tr><td>12</td><td><strong>Web 版与 App 参数互通</strong></td><td>通过 URL hash / 二维码传递预设，两端视觉一致</td><td>中</td></tr></tbody></table></div>
+<hr/>
+<h2 id="七-建议的修复顺序">七、建议的修复顺序</h2>
+<pre class="code" data-lang="text"><code>第一批（正确性，必须修）
+  P0-1 HDR 视频色彩        ← 影响所有 HDR 实况照片，且静默出错
+  P0-2 音画偏移            ← 100ms，可感知
+  P0-3 选图竞态            ← 元数据错配，用户无法察觉
+  P0-4 fileSize 兜底       ← 数据丢失
+
+第二批（稳定性）
+  P1-1 预览位图泄漏
+  P1-7 导出防重入
+  P1-2 / P1-3 GL 资源释放
+  P1-5 重复 initLogos
+
+第三批（体验与性能）
+  P1-6 4K 内存
+  5.1 视频合成优化
+  P2 系列清理</code></pre>
+<hr/>
+<h2 id="八-验证方法-可复现">八、验证方法（可复现）</h2>
+<pre class="code" data-lang="bash"><code>cd D:/data/code/liquidglass/android
+
+# 1) 元数据单元测试（69 条断言）
+./run-tests.sh
+
+# 2) 装到项目自带模拟器
+./emu.sh install -r VitreLens.apk
+./emu.sh logcat -c
+./emu.sh shell "am start -n com.vitrelens.app/.MainActivity \
+    --es srcPath /sdcard/Pictures/dyn8.jpg"
+./emu.sh shell input tap 632 108          # 导出
+./emu.sh logcat -d -s VitreLens:*
+
+# 3) 校验产物：抽尾部视频、比 colr / elst / MPF / XMP
+#    本次评审用的脚本思路见下</code></pre>
+<ul>
+<li><strong>色彩</strong>：读 <code>moov/trak/mdia/minf/stbl/stsd/avc1/colr</code> 的 <code>nclx</code> 四元组，比较输入输出；</li>
+<li><strong>音画</strong>：读 <code>moov/trak/edts/elst</code> 的 <code>segment_duration</code> 与 <code>media_time</code>，比较两轨相对偏移；</li>
+<li><strong>容器一致性</strong>：读 MPF 的 <code>MP Entry</code>，验证 <code>tiff + offset[n] == trailer_start</code>、<code>size[0] == trailer_start</code>、<code>trailer_start + size[1] == file_size</code>，以及 XMP <code>Item:Length</code> 与实际视频字节数相等。</li>
+</ul>
+<p>本次实测的三张样本结论：MPF / XMP / 增益图<strong>全部自洽</strong>，问题集中在视频的色彩与时间轴。</p>
+<hr/>
+<p><em>评审基于 commit <code>ecb534c</code>。文中「已实测」项均有模拟器产物与二进制比对支撑；「读码推断」项给出了触发条件与修复方案，未构造复现。</em></p>
+</div></div>
+</body>
+</html>

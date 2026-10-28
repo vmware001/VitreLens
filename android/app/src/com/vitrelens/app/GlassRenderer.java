@@ -296,4 +296,49 @@ class GlassRenderer {
     }
 
     int maxTexture() { return maxTex; }
+
+    /**
+     * 释放 EGL 上下文与全部 GL 资源。
+     *
+     * 之前这个类根本没有 release —— 每次 Activity 重建（旋转、切换深色模式）
+     * 都会漏掉一整套 EGL 上下文和三个纹理，反复切换最终会把显卡资源耗尽。
+     * 必须在渲染线程上调用（EGL 上下文与线程绑定）。
+     */
+    synchronized void release() {
+        if (display == EGL14.EGL_NO_DISPLAY) return;
+        try {
+            EGL14.eglMakeCurrent(display, surface, surface, context);
+            if (program != 0) {
+                GLES20.glDeleteProgram(program);
+                program = 0;
+            }
+            if (fbo != 0) {
+                int[] a = {fbo};
+                GLES20.glDeleteFramebuffers(1, a, 0);
+                fbo = 0;
+            }
+            int[] t = {texPhoto, texBlur, texBlur2};
+            GLES20.glDeleteTextures(3, t, 0);
+            texPhoto = texBlur = texBlur2 = 0;
+        } catch (Throwable ignored) {
+        }
+        try {
+            EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
+            if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface);
+            if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context);
+            EGL14.eglTerminate(display);
+        } catch (Throwable ignored) {
+        }
+        display = EGL14.EGL_NO_DISPLAY;
+        context = EGL14.EGL_NO_CONTEXT;
+        surface = EGL14.EGL_NO_SURFACE;
+        if (blurBitmap != null) {
+            blurBitmap.recycle();
+            blurBitmap = null;
+        }
+        if (blurBitmap2 != null) {
+            blurBitmap2.recycle();
+            blurBitmap2 = null;
+        }
+    }
 }

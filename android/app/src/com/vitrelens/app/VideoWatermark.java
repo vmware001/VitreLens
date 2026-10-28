@@ -36,6 +36,9 @@ class VideoWatermark {
 
     private static final String TAG = "VitreLens";
 
+    /** 最近一次转码的色彩处理结论，供导出提示使用（null 表示还没跑过） */
+    static volatile String lastColorNote;
+
     interface Progress {
         void onProgress(int frame, int total, String stage);
     }
@@ -79,6 +82,19 @@ class VideoWatermark {
         boolean swapped = (rotation == 90 || rotation == 270);
         int outW = align2(swapped ? srcH : srcW);
         int outH = align2(swapped ? srcW : srcH);
+
+        // 源视频的真实色彩特性。之前一律按 BT.601 + SDR 处理，
+        // 遇到 BT.2020/HLG 的源（OPPO 的动态照片就是）会整体偏色发灰，而且不会报错。
+        YuvConverter yuv = new YuvConverter(
+                getInt(vf, MediaFormat.KEY_COLOR_STANDARD, 0),
+                getInt(vf, MediaFormat.KEY_COLOR_TRANSFER, 0),
+                getInt(vf, MediaFormat.KEY_COLOR_RANGE, 0));
+
+        // edit list：媒体时间 0 之前可能还有一段预卷，真正的第 0 帧在 media_time 处。
+        // 不跳过的话成片会多出这段内容，相对音频整体超前（实测 OPPO 是 100ms）。
+        long videoEditUs = Mp4EditList.videoStartUs(in);
+        lastColorNote = null;
+        Log.i(TAG, "视频色彩：" + yuv.label + "，edit list 偏移 " + videoEditUs + "us");
 
         // ── 1. 先把音轨样本全读进内存（几 KB，安全）
         List<Sample> audio = new ArrayList<Sample>();
@@ -138,6 +154,14 @@ class VideoWatermark {
         ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(outW, outH, fps));
         ef.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         ef.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+        // 我们喂给编码器的是已经色调映射过的 SDR 内容，标签必须跟着走。
+        // 之前源是 HLG 却让编码器默认填 BT.709/SDR —— 内容与标签不符，播放器按标签解读就偏色。
+        try {
+            ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
+            ef.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+            ef.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+        } catch (Throwable ignored) {
+        }
         enc.configure(ef, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         Surface encSurface = enc.createInputSurface();
         enc.start();
@@ -161,7 +185,6 @@ class VideoWatermark {
         SurfaceBlitter blitter = new SurfaceBlitter(encSurface, outW, outH);
         List<Sample> video = new ArrayList<Sample>();
         MediaFormat encFmt = null;
-        long basePts = -1;
         int done = 0;
         int guard = 0;
         // 视频取景比照片窄（没有片门全开）：实测 OPPO 约为照片的 94%，且贴着底边裁。
@@ -208,9 +231,10 @@ class VideoWatermark {
                     boolean eos = (bi.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                     long pts = bi.presentationTimeUs;
                     boolean dup = (pts == lastRenderedPts);
+                    // 预卷帧只解码不合成：解码器需要它才能解出后续帧，但成片里不该有
+                    boolean preRoll = pts < videoEditUs;
 
-                    if (!dup) {
-                        if (basePts < 0) basePts = pts;
+                    if (!dup && !preRoll) {
                         Image img = null;
                         try {
                             img = dec.getOutputImage(oi);
@@ -220,7 +244,7 @@ class VideoWatermark {
                         if (img != null) {
                             nPlanes = img.getPlanes() == null ? 0 : img.getPlanes().length;
                             try {
-                                ok.v = yuvToBitmap(img, frameRaw, rowPixels, srcW, srcH);
+                                ok.v = yuv.toBitmap(img, frameRaw, rowPixels, srcW, srcH);
                             } finally {
                                 img.close();
                             }
@@ -311,6 +335,15 @@ class VideoWatermark {
         Collections.sort(all, (a, b) -> Long.compare(a.ptsUs, b.ptsUs));
 
         MediaMuxer mux = new MediaMuxer(out.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+        // MediaMuxer 依据「编码器输出格式」写 colr box，输入格式上的声明传不过来。
+        // 不补这一段，成片里没有 colr —— 虽然播放器会按默认的 BT.709/SDR 解读（正好与我们
+        // 输出的内容一致），但显式写清楚更稳妥。
+        try {
+            encFmt.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
+            encFmt.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+            encFmt.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+        } catch (Throwable ignored) {
+        }
         int vTrack = mux.addTrack(encFmt);
         int aTrack = -1;
         if (aFmt != null && !audio.isEmpty()) {
@@ -327,13 +360,23 @@ class VideoWatermark {
                 + " 视频样本 " + video.size() + " 个/" + vBytes + " 字节"
                 + " 音频 " + audio.size() + " 个/" + aBytes + " 字节"
                 + " 编码格式=" + encFmt);
+        // 时间基准：视频要减掉 edit list 的预卷，音频用它自己的时间轴；
+        // 两者都减同一个「全局最早时刻」，相对关系才不会被破坏。
+        long origin = Long.MAX_VALUE;
+        for (Sample s : all) {
+            long disp = s.video ? s.ptsUs - videoEditUs : s.ptsUs;
+            if (disp < origin) origin = disp;
+        }
+        if (origin == Long.MAX_VALUE || origin < 0) origin = 0;
+        Log.i(TAG, "时间基准 origin=" + origin + "us（视频预卷 " + videoEditUs + "us）");
+
         MediaCodec.BufferInfo wbi = new MediaCodec.BufferInfo();
         int vWritten = 0, aWritten = 0;
         try {
             for (Sample s : all) {
                 int track = s.video ? vTrack : aTrack;
                 if (track < 0) continue;
-                long t = s.ptsUs - (basePts > 0 ? basePts : 0);
+                long t = (s.video ? s.ptsUs - videoEditUs : s.ptsUs) - origin;
                 if (t < 0) t = 0;
                 wbi.set(0, s.data.length, t, s.codecFlags);
                 try {
@@ -355,7 +398,10 @@ class VideoWatermark {
             mux.release();
         }
 
-        Log.i(TAG, "MP4 封装完成：" + out.length() + " 字节");
+        lastColorNote = yuv.hdrSource
+                ? "视频 " + yuv.label + " → 已色调映射为 SDR（BT.709）"
+                : "视频 " + yuv.label;
+        Log.i(TAG, "MP4 封装完成：" + out.length() + " 字节，" + lastColorNote);
         return out.length();
     }
 
@@ -431,67 +477,6 @@ class VideoWatermark {
     /** 小盒子，用来把「这帧转换成功了吗」带出 try 块 */
     private static class Box {
         boolean v;
-    }
-
-    /**
-     * Image(YUV_420_888) → ARGB Bitmap。
-     * BT.601 limited range，整数运算；先按行拷成数组再算，避免逐像素走 ByteBuffer.get。
-     */
-    private static boolean yuvToBitmap(Image img, Bitmap bmp, int[] scratch, int W, int H) {
-        Image.Plane[] planes = img.getPlanes();
-        if (planes == null || planes.length < 3) return false;
-        if (img.getWidth() != W || img.getHeight() != H) return false;
-
-        ByteBuffer yB = planes[0].getBuffer();
-        ByteBuffer uB = planes[1].getBuffer();
-        ByteBuffer vB = planes[2].getBuffer();
-        int yRow = planes[0].getRowStride(), yPix = planes[0].getPixelStride();
-        int uRow = planes[1].getRowStride(), uPix = planes[1].getPixelStride();
-        int vRow = planes[2].getRowStride(), vPix = planes[2].getPixelStride();
-
-        int cw = (W + 1) / 2;
-        int yLen = W * yPix;
-        int cLen = cw * Math.max(uPix, vPix);
-        byte[] yLine = new byte[yLen];
-        byte[] uLine = new byte[cLen];
-        byte[] vLine = new byte[cLen];
-
-        for (int y = 0; y < H; y++) {
-            yB.position(y * yRow);
-            int n = Math.min(yLen, yB.remaining());
-            yB.get(yLine, 0, n);
-
-            if ((y & 1) == 0) {
-                int cy = (y >> 1) * uRow;
-                uB.position(cy);
-                int un = Math.min(cLen, uB.remaining());
-                uB.get(uLine, 0, un);
-                vB.position(cy);
-                int vn = Math.min(cLen, vB.remaining());
-                vB.get(vLine, 0, vn);
-            }
-
-            int base = y * W;
-            for (int x = 0; x < W; x++) {
-                int Y = yLine[x * yPix] & 0xFF;
-                int ci = (x >> 1) * uPix;
-                int U = uLine[ci] & 0xFF;
-                int V = vLine[(x >> 1) * vPix] & 0xFF;
-
-                int c = Y - 16;
-                int d = U - 128;
-                int e = V - 128;
-                int r = (298 * c + 409 * e + 128) >> 8;
-                int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-                int b = (298 * c + 516 * d + 128) >> 8;
-                if (r < 0) r = 0; else if (r > 255) r = 255;
-                if (g < 0) g = 0; else if (g > 255) g = 255;
-                if (b < 0) b = 0; else if (b > 255) b = 255;
-                scratch[base + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
-            }
-        }
-        bmp.setPixels(scratch, 0, W, 0, 0, W, H);
-        return true;
     }
 
     private static int bitrateFor(int w, int h, int fps) {

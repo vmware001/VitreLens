@@ -145,19 +145,34 @@ class Meta {
 
         m.trailerStart = m.eoiEnd;
         if (fileLen > 0) m.trailerLength = Math.max(0, fileLen - m.eoiEnd);
-        // OPPO 的 HDR 尾块是自描述的：开头 4 字节（大端）就等于它自己的长度。
-        // 用这个特征判断，比找标记段可靠（这种尾块不带 MPF、也不带 XMP）。
-        if (m.trailerLength >= 8) {
-            try {
-                byte[] b4 = new byte[4];
-                int n = in.read(b4, 0, 4);
-                if (n == 4) {
-                    long v = ((b4[0] & 0xFFL) << 24) | ((b4[1] & 0xFFL) << 16)
-                            | ((b4[2] & 0xFFL) << 8) | (b4[3] & 0xFFL);
-                    if (v == m.trailerLength) m.hdr = true;
-                }
-            } catch (Exception ignored) {
+
+        // 先读尾部开头 4 字节：OPPO 的 HDR 尾块是自描述的（这 4 字节大端就等于它自己的长度），
+        // 这个特征比找标记段可靠 —— 这种尾块既不带 MPF 也不带 XMP。
+        byte[] b4 = new byte[4];
+        int n4 = -1;
+        try {
+            n4 = in.read(b4, 0, 4);
+        } catch (Exception ignored) {
+        }
+
+        if (fileLen <= 0) {
+            // 管道类 provider（openAssetFileDescriptor 也拿不到长度）会走到这里。
+            // 之前这里直接让 trailerLength 归零，导出时尾部一个字节都不写 ——
+            // 动态照片静默变成静态图，HDR 增益图也没了。这里把剩余字节自己数出来。
+            long n = Math.max(0, n4);
+            if (n4 == 4) {
+                byte[] buf = new byte[1 << 16];
+                int k;
+                while ((k = in.read(buf)) > 0) n += k;
             }
+            m.trailerLength = n;
+            m.trailerStart = m.eoiEnd;
+        }
+
+        if (m.trailerLength >= 8 && n4 == 4) {
+            long v = ((b4[0] & 0xFFL) << 24) | ((b4[1] & 0xFFL) << 16)
+                    | ((b4[2] & 0xFFL) << 8) | (b4[3] & 0xFFL);
+            if (v == m.trailerLength) m.hdr = true;
         }
 
         if (xmpBytes != null) {

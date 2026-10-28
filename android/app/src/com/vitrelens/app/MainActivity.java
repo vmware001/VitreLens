@@ -7,6 +7,7 @@ import android.content.ContentValues;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.ImageDecoder;
 import android.graphics.Matrix;
 import android.net.Uri;
@@ -43,6 +44,8 @@ public class MainActivity extends Activity {
     private boolean detailMode;
     private float closeUpPan = 0.5f;
     private Bitmap lastComposed;
+    private Bitmap cropBuf;          // 特写裁剪的复用缓冲，拖动时不重新分配
+    private Canvas cropCanvas;
     private float lastTouchX;
     private LinearLayout controls;
 
@@ -153,18 +156,6 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) {
         }
 
-        try {
-            int[] ids = {R.drawable.logo_leica, R.drawable.logo_hasselblad,
-                    R.drawable.logo_hasselblad_h, R.drawable.logo_zeiss,
-                    R.drawable.logo_ricoh, R.drawable.logo_apple};
-            Bitmap[] bmps = new Bitmap[ids.length];
-            for (int i = 0; i < ids.length; i++) {
-                bmps[i] = android.graphics.BitmapFactory.decodeResource(getResources(), ids[i]);
-            }
-            WatermarkPainter.initLogos(bmps);
-        } catch (Throwable ignored) {
-        }
-
         loadCustomLogo();
         panel = new ControlPanel(this, style, this::schedulePreview);
         refreshers = panel.build(controls);
@@ -179,7 +170,38 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        glQueue.shutdownNow();
+        // 先让渲染线程把 EGL 与 GL 资源还回去，再关队列。
+        // 之前直接 shutdownNow()，GlassRenderer 没有 release()，每重建一次 Activity
+        // 就漏一整套 EGL 上下文（切换深色模式、旋转都会触发重建）。
+        if (glass != null) {
+            try {
+                glQueue.execute(glass::release);
+            } catch (Throwable ignored) {
+            }
+        }
+        glQueue.shutdown();
+        try {
+            glQueue.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+        recycleQuietly(lastComposed);
+        recycleQuietly(cropBuf);
+        recycleQuietly(previewBase);
+        recycleQuietly(photo);
+        lastComposed = null;
+        cropBuf = null;
+        previewBase = null;
+        photo = null;
+    }
+
+    private static void recycleQuietly(Bitmap b) {
+        if (b != null && !b.isRecycled()) {
+            try {
+                b.recycle();
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     /* ── 外部入口 ── */
@@ -204,11 +226,23 @@ public class MainActivity extends Activity {
     }
 
     private void pickImage() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("image/*");
+        // ACTION_OPEN_DOCUMENT 打开的是系统的「文件」界面（按目录浏览），
+        // 挑照片要多点好几层。改用相册的 ACTION_PICK：直接是缩略图网格。
+        // 没有相册应用时再退回 ACTION_GET_CONTENT（仍然只列图片）。
+        Intent i = new Intent(Intent.ACTION_PICK);
+        i.setDataAndType(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*");
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        startActivityForResult(i, REQ_PICK);
+        if (i.resolveActivity(getPackageManager()) == null) {
+            i = new Intent(Intent.ACTION_GET_CONTENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("image/*");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+        try {
+            startActivityForResult(i, REQ_PICK);
+        } catch (Throwable t) {
+            toast("没有找到可用的图片选择器");
+        }
     }
 
     @Override
@@ -492,17 +526,21 @@ public class MainActivity extends Activity {
         }
         if (meta != null) {
             if (meta.hdr) {
-                st.append(" · ProXDR ✓");
+                st.append(" · 照片 ProXDR ✓");
                 if (srcW > 0 && (srcW != photoW || srcH != photoH)) {
                     st.append("（已缩放，增益图可能对不上）");
                 }
             } else if (meta.motion) {
-                st.append(" · 无增益图");
+                st.append(" · 照片无增益图");
             } else {
                 st.append(" · 无增益图（HDR 无法保留）");
                 // HEIC 没有增益图时，OPPO 相册的「转换为兼容格式」会重新生成一份，
                 // 先用它转成 JPEG 再导入本 App，HDR 就能保留下来。
                 st.append("\n提示：先在相册「转换为兼容格式」转成 JPEG 再导入，ProXDR 才能保住");
+            }
+            if (meta.motion) {
+                // 视频轨的 HDR 是另一回事：转码时统一色调映射成 SDR，避免偏色发灰
+                st.append(" · 视频轨转 SDR");
             }
         }
         status.setText(st.toString());
@@ -552,45 +590,74 @@ public class MainActivity extends Activity {
                 if (base == null) return;
                 Bitmap work = base.copy(Bitmap.Config.ARGB_8888, true);
                 if (work == null) return;
-                Bitmap out = composer.composeOn(work, work.getWidth(), work.getHeight(), st);
-                lastComposed = out;
-                final Bitmap show = detailMode ? closeUp(out, st) : out;
+                final Bitmap out = composer.composeOn(work, work.getWidth(), work.getHeight(), st);
                 ui.post(() -> {
-                    if (seq != previewSeq) return;
-                    preview.setImageBitmap(show);
+                    // 过期的帧没人会显示，必须回收，否则每次拖动滑块都漏一张整图
+                    if (seq != previewSeq) {
+                        recycleQuietly(out);
+                        return;
+                    }
+                    Bitmap prev = lastComposed;
+                    lastComposed = out;
+                    if (detailMode) {
+                        updateCloseUp();
+                    } else {
+                        preview.setImageBitmap(out);
+                    }
+                    // setImageBitmap 之后 ImageView 已经不再引用上一张，可以安全回收
+                    if (prev != null && prev != out) recycleQuietly(prev);
                 });
             } catch (Throwable ignored) {
             }
         });
     }
 
+    /**
+     * 特写：把水印那一块裁出来，可用 closeUpPan 左右平移。
+     *
+     * 裁剪结果画进一块复用缓冲里。原来每次 ACTION_MOVE 都 Bitmap.createBitmap
+     * 一张新图（1400×300 约 1.7MB），拖几十秒就是上千张垃圾。
+     */
     private void updateCloseUp() {
         if (!detailMode || lastComposed == null) return;
-        try {
-            preview.setImageBitmap(closeUp(lastComposed, style));
-        } catch (Throwable ignored) {
+        int[] box = closeUpBox(lastComposed, style);
+        if (box[2] < 8 || box[3] < 8) {
+            preview.setImageBitmap(lastComposed);
+            return;
         }
+        if (cropBuf == null || cropBuf.isRecycled()
+                || cropBuf.getWidth() != box[2] || cropBuf.getHeight() != box[3]) {
+            recycleQuietly(cropBuf);
+            cropBuf = null;
+            cropCanvas = null;
+            try {
+                cropBuf = Bitmap.createBitmap(box[2], box[3], Bitmap.Config.ARGB_8888);
+                cropCanvas = new Canvas(cropBuf);
+            } catch (Throwable t) {
+                return;
+            }
+        }
+        if (cropCanvas == null) return;
+        cropCanvas.drawBitmap(lastComposed, -box[0], -box[1], null);
+        preview.setImageBitmap(cropBuf);
     }
 
-    /** 特写：把水印那一块裁出来放大，可用 closeUpPan 左右平移 */
-    private Bitmap closeUp(Bitmap full, WatermarkPainter.Style st) {
+    /** @return {x, y, w, h}：特写要裁的区域，已夹在图内 */
+    private int[] closeUpBox(Bitmap full, WatermarkPainter.Style st) {
         int W = full.getWidth(), H = full.getHeight();
         WatermarkPainter.Layout L = WatermarkPainter.layout(W, H, st);
         float u = W / 1000f;
         int pad = Math.round(L.panel.h * 1.1f) + Math.round(30 * u);
         int top = Math.max(0, Math.round(L.panel.y) - pad);
         int bottom = Math.min(H, Math.round(L.panel.y + L.panel.h) + pad);
-        int cw = Math.round(L.panel.w * 0.62f);
-        if (cw > W) cw = W;
+        int cw = Math.min(W, Math.round(L.panel.w * 0.62f));
+        int ch = bottom - top;
+        if (cw < 8 || ch < 8) return new int[]{0, 0, 0, 0};
         int minX = Math.max(0, Math.round(L.panel.x - 20 * u));
         int maxX = Math.max(minX, Math.min(W - cw, Math.round(L.panel.x + L.panel.w - cw + 20 * u)));
         int cx = Math.round(minX + (maxX - minX) * closeUpPan);
-        if (cw < 8 || bottom - top < 8) return full;
-        try {
-            return Bitmap.createBitmap(full, Math.max(0, Math.min(W - cw, cx)), top, cw, bottom - top);
-        } catch (Throwable t) {
-            return full;
-        }
+        cx = Math.max(0, Math.min(W - cw, cx));
+        return new int[]{cx, Math.max(0, Math.min(H - ch, top)), cw, ch};
     }
 
     /* ── 导出 ── */
@@ -692,6 +759,9 @@ public class MainActivity extends Activity {
                 else if (meta != null && meta.motion) msg = "已导出（视频未加水印）";
                 else msg = "已导出 → 相册 Pictures/VitreLens";
                 if (hdrNote != null) msg = msg + "\n" + hdrNote;
+                if (hadVideo && VideoWatermark.lastColorNote != null) {
+                    msg = msg + "\n" + VideoWatermark.lastColorNote;
+                }
                 Log.i("VitreLens", "导出自检: " + hdrNote + "（源图 hdr=" + (meta != null && meta.hdr) + "）");
                 final String outMsg = msg;
                 final boolean warn = videoWarn != null;
