@@ -86,6 +86,14 @@ class ControlPanel {
         slider(c2, "参数字号", 6, 20, 0.5f, () -> st.metaSize, v -> st.metaSize = v,
                 p -> String.format(Locale.US, "%.1f", p));
 
+        label(c2, "Logo 位置");
+        segmented(c2, new String[]{"名称右侧", "居中", "参数左侧"},
+                () -> logoPosIndex(st.logoPos),
+                v -> st.logoPos = new String[]{"left", "center", "right"}[v],
+                () -> logoPosIndex(st.logoPos));
+        slider(c2, "Logo 大小", 50, 200, 1, () -> st.logoSizePct, v -> st.logoSizePct = v,
+                p -> Math.round(p) + "%");
+
         label(c2, "字体");
         segmented(c2, new String[]{"无衬线", "窄体", "衬线", "等宽"},
                 () -> fontIndex(st.font),
@@ -316,6 +324,12 @@ class ControlPanel {
     static float whiteSlider(float value) {
         double v = Math.min(1.0, Math.max(0.0, value / 100.0));
         return (float) (100 * (Math.pow(1 + WHITE_K, v) - 1) / WHITE_K);
+    }
+
+    static int logoPosIndex(String p) {
+        if ("left".equals(p)) return 0;
+        if ("center".equals(p)) return 1;
+        return 2;
     }
 
     static int alignIndex(String a) {

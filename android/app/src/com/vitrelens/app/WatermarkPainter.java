@@ -29,12 +29,16 @@ class WatermarkPainter {
         boolean showParams = true;
         boolean showMeta = true;
 
-        int brand = 2;                 // 0 无 1 徕卡 2 哈苏 3 蔡司 4 理光
+        int brand = 2;                 // 0 无 1 徕卡 2 哈苏 3 哈苏H 4 蔡司 5 理光 6 苹果 7 自定义
         String align = "center";       // left / center / right
         String font = "condensed";     // sans / condensed / serif / mono
         String nameMaterial = "solid"; // liquid / frost / solid
 
         float widthPct = 92f;
+        /** Logo 尺寸，100% = 跟随字号 */
+        float logoSizePct = 100f;
+        /** Logo 位置：left 紧跟名称 / center 居中 / right 紧贴参数左侧（默认） */
+        String logoPos = "right";
         /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
         float glassHeightPct = 100f;
         /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
@@ -71,6 +75,7 @@ class WatermarkPainter {
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
+            s.logoSizePct = logoSizePct; s.logoPos = logoPos;
             s.nameSize = nameSize; s.metaSize = metaSize; s.italic = italic;
             s.ior = ior; s.radiusPct = radiusPct; s.depthPct = depthPct;
             s.thicknessPct = thicknessPct; s.roughPct = roughPct; s.dispPct = dispPct;
@@ -98,6 +103,8 @@ class WatermarkPainter {
         boolean paramsOn, metaOn, subOn;
         float logoX, logoY, logoW, logoH;
         boolean logoOn;
+        /** logo 与参数之间的白色短竖线；sepX <= 0 表示不画 */
+        float sepX, sepTop, sepBottom;
         boolean hasContent;
     }
 
@@ -151,7 +158,8 @@ class WatermarkPainter {
             float lineH = fmM.descent - fmM.ascent;
             float lineGap = metaSize * 0.62f;
 
-            float logoH = nameSize * 1.0f;
+            // 哈苏是 10:1 的横排字标，按普通字号算高度只有 0.1 倍，小到看不清
+            float logoH = nameSize * (st.brand == 2 ? 1.5f : 1.0f) * (st.logoSizePct / 100f);
             float logoW = st.showBrand ? logoWidth(st.brand, logoH) : 0;
 
             float gapA = logoW > 0 ? nameSize * 0.55f : 0;
@@ -233,10 +241,27 @@ class WatermarkPainter {
                 float leftEnd = panelX + L.padX + leftW;
                 float rightStart = panelX + panelW - L.padX - rightW;
                 float space = rightStart - leftEnd;
-                float gx = leftEnd + gapA;
-                if (space > logoW + gapA + gapB * 0.4f) gx = leftEnd + (space - logoW) / 2f;
+                float gx;
+                if ("left".equals(st.logoPos)) {
+                    gx = leftEnd + gapA;
+                } else if ("right".equals(st.logoPos) && rightW > 0) {
+                    // 默认：贴着参数列的左边，两者之间留一根竖线的位置
+                    gx = rightStart - gapB - logoW;
+                    if (gx < leftEnd + gapA * 0.5f) gx = leftEnd + gapA * 0.5f;
+                } else {
+                    gx = leftEnd + Math.max(gapA, (space - logoW) / 2f);
+                }
                 L.logoX = gx;
                 L.logoY = cy - logoH / 2f;
+
+                // logo 与参数之间画一条白色短竖线（只有右侧布局、且两侧都有内容时才有意义）
+                if ("right".equals(st.logoPos) && rightW > 0 && space > logoW) {
+                    // 放在 logo 与参数之间的正中，贴任何一侧都会显得挤
+                    L.sepX = (gx + logoW + rightStart) / 2f;
+                    float half = Math.min(contentH, nameSize * 1.3f) * 0.5f;
+                    L.sepTop = cy - half;
+                    L.sepBottom = cy + half;
+                }
             }
             return L;
         }
@@ -297,6 +322,15 @@ class WatermarkPainter {
         }
 
         if (L.logoOn) drawLogo(c, st.brand, L.logoX, L.logoY, L.logoH, st.nameMaterial);
+
+        // logo 与参数之间的分隔竖线
+        if (L.sepX > 0) {
+            Paint sep = new Paint(Paint.ANTI_ALIAS_FLAG);
+            sep.setColor("frost".equals(st.nameMaterial) ? 0x8AFFFFFF : 0xD2FFFFFF);
+            sep.setStrokeWidth(Math.max(1.2f, u * 1.7f));
+            sep.setStrokeCap(Paint.Cap.ROUND);
+            c.drawLine(L.sepX, L.sepTop, L.sepX, L.sepBottom, sep);
+        }
     }
 
     /* ── 机型名的三种材质 ── */
@@ -436,10 +470,15 @@ class WatermarkPainter {
         for (int i = 0; i < 6 && i < bmps.length; i++) {
             Bitmap b = bmps[i];
             if (b != null && b.getWidth() > 1 && b.getHeight() > 0) {
-                Bitmap m = buildMask(b);
+                Bitmap m = buildMask(b, i == 3);
                 if (m != null) logoBmps[i] = m;
-                Bitmap t = trimAlpha(logoBmps[i]);
-                if (t != null) logoBmps[i] = t;
+                // 蔡司（索引 3）的标是「蓝底方块 + 白字 + 底部弧线」，抠掉底色后如果按内容裁边，
+                // 方块边界就没了，只剩一条宽扁的「字 + 弧线」，再套外框就像张笑脸。
+                // 保留原始方形画布，字与弧线的相对位置才是对的。
+                if (i != 3) {
+                    Bitmap t = trimAlpha(logoBmps[i]);
+                    if (t != null) logoBmps[i] = t;
+                }
                 logoAspect[i] = logoBmps[i].getWidth() / (float) logoBmps[i].getHeight();
             }
         }
@@ -451,6 +490,15 @@ class WatermarkPainter {
      * 用「与背景色的距离」当不透明度——文字留下、底色变透明。
      */
     private static Bitmap buildMask(Bitmap src) {
+        return buildMask(src, false);
+    }
+
+    /**
+     * @param keepBg true 时把背景色保留成一层淡白（而不是完全抠掉）。
+     *               蔡司的标是「蓝底方块 + 白字」，底色就是标志的一部分，
+     *               抠干净只剩一条宽扁的字+弧线，反而不像官方。
+     */
+    private static Bitmap buildMask(Bitmap src, boolean keepBg) {
         int w = src.getWidth(), h = src.getHeight();
         if (w < 3 || h < 3) return null;
         int[] px = new int[w * h];
@@ -515,6 +563,7 @@ class WatermarkPainter {
             double d = Math.sqrt(dr * dr + dg * dg + db * db) / 441.0;
             double a = (d - 0.06) / (0.35 - 0.06);
             a = a < 0 ? 0 : (a > 1 ? 1 : a);
+            if (keepBg) a = a < 0.45 ? 0.20 : 1.0;   // 底色留 20%，形成方块
             int alpha = (int) Math.round(a * 255);
             dst[i] = (alpha << 24) | 0x00FFFFFF;
         }
@@ -584,12 +633,20 @@ class WatermarkPainter {
         return (b != null && b.getWidth() > 1) ? b : null;
     }
 
+    /**
+     * Logo 允许的最大宽度（相对高度的倍数）。
+     * 哈苏是 10:1 的横排字标，按 2.2 倍上限压下去高度只剩 0.22 倍字号，小得看不清；
+     * 单独放宽到 7 倍，字标高度就能落在 1 倍字号附近。
+     */
+    private static float logoMaxW(int brand, float h) {
+        return h * (brand == 2 ? 7.0f : 2.2f);
+    }
+
     private static float logoWidth(int brand, float h) {
         Bitmap b = logoBitmap(brand);
         if (b != null) {
             float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
-            float w = Math.min(h * 2.2f, h * asp);
-            return w;
+            return Math.min(logoMaxW(brand, h), h * asp);
         }
         return vectorLogoWidth(brand, h);
     }
@@ -631,7 +688,7 @@ class WatermarkPainter {
     private static void drawLogoFrame(Canvas c, float x, float y, float w, float hh, String material) {
         float pad = hh * 0.10f;
         RectF r = new RectF(x - pad, y - pad, x + w + pad, y + hh + pad);
-        float rad = Math.min(r.width(), r.height()) * 0.10f;
+        float rad = Math.min(r.width(), r.height()) * 0.03f;
         float stroke = Math.max(1f, hh * 0.055f);
         int color = "frost".equals(material) ? 0x9EFFFFFF
                 : ("liquid".equals(material) ? 0xE6FFFFFF : 0xFFFFFFFF);
@@ -671,12 +728,10 @@ class WatermarkPainter {
         Bitmap b = logoBitmap(brand);
         if (b != null) {
             float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
-            float w = Math.min(h * 2.2f, h * asp);
+            float w = Math.min(logoMaxW(brand, h), h * asp);
             float hh = w / asp;
             float top = y + (h - hh) / 2f;
             drawLogoBitmap(c, b, x, top, w, hh, material);
-            // 蔡司的标是一个带边框的方块，只留字母会丢掉标志性的外框
-            if (brand == 4) drawLogoFrame(c, x, top, w, hh, material);
             return;
         }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
