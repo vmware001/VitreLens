@@ -77,7 +77,7 @@ class WatermarkPainter {
         float shadowPct = 18f;     // 投影
         float whitePct = 0f;       // 加白
         boolean tintOn = true;     // 色调
-        int segments = 64;         // 法线采样细分
+        int segments = 128;        // 法线采样细分：纯解析计算，越大越准且不额外耗时
 
         /** 视频水印高度微调（% 画幅宽度），正数=往上挪 */
         float videoGapShift = 2f;

@@ -176,6 +176,24 @@
                 android:background="@drawable/bg_chip" />
         </FrameLayout>
 
+        <!-- 选了多张照片时显示，点缩略图切换当前编辑的那张 -->
+        <HorizontalScrollView
+            android:id="@+id/filmRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:layout_marginTop="8dp"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/filmstrip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
         <!-- 下半部分：左边一排按钮，点哪个右边就换成哪一组选项 -->
         <LinearLayout
             android:layout_width="match_parent"

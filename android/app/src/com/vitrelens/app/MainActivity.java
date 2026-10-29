@@ -26,6 +26,8 @@ import android.media.MediaPlayer;
 import android.view.Surface;
 import android.view.TextureView;
 import android.widget.ImageView;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -48,6 +50,14 @@ public class MainActivity extends Activity {
     private static final int PREVIEW_MAX = 1400;
 
     private ImageView preview, backdrop;
+    /** 选中的照片列表（支持多选）；只有一个时缩略图条隐藏 */
+    private final java.util.List<Uri> photoUris = new java.util.ArrayList<>();
+    private int photoIndex = 0;
+    private HorizontalScrollView filmRow;
+    private LinearLayout filmstrip;
+    /** 批量导出用：这一张处理完后要做什么 */
+    /** 批量导出：这一张加载完之后要做的事 */
+    private Runnable afterLoad;
     /** 整屏背景位图，界面上的液态玻璃面板要拿它取样 */
     private Bitmap backdropBmp;
     /** 屏幕尺寸的清晰背景（centerCrop 过），界面玻璃拿它取样：
@@ -103,6 +113,8 @@ public class MainActivity extends Activity {
 
         preview = findViewById(R.id.preview);
         backdrop = findViewById(R.id.backdrop);
+        filmRow = findViewById(R.id.filmRow);
+        filmstrip = findViewById(R.id.filmstrip);
         hint = findViewById(R.id.hint);
         status = findViewById(R.id.status);
         sizeInfo = findViewById(R.id.sizeInfo);
@@ -544,11 +556,31 @@ public class MainActivity extends Activity {
         if (Intent.ACTION_VIEW.equals(action)) uri = it.getData();
         else if (Intent.ACTION_SEND.equals(action)) uri = it.getParcelableExtra(Intent.EXTRA_STREAM);
         if (uri == null) {
+            // srcPath 支持用 | 分隔多张（外部一次传一批）
             String path = it.getStringExtra("srcPath");
-            if (path != null && !path.isEmpty()) uri = Uri.fromFile(new java.io.File(path));
+            if (path != null && !path.isEmpty()) {
+                String[] parts = path.split("\\|");
+                if (parts.length > 1) {
+                    photoUris.clear();
+                    for (String one : parts) {
+                        if (!one.trim().isEmpty()) {
+                            photoUris.add(Uri.fromFile(new java.io.File(one.trim())));
+                        }
+                    }
+                    if (!photoUris.isEmpty()) {
+                        photoIndex = 0;
+                        loadImage(photoUris.get(0), false);
+                        return;
+                    }
+                }
+                uri = Uri.fromFile(new java.io.File(path));
+            }
         }
         if (uri == null) return;
         final Uri u = uri;
+        photoUris.clear();
+        photoUris.add(u);
+        photoIndex = 0;
         int flags = it.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
         if (flags != 0) {
             try { getContentResolver().takePersistableUriPermission(u, flags); } catch (Exception ignored) { }
@@ -563,11 +595,14 @@ public class MainActivity extends Activity {
         Intent i = new Intent(Intent.ACTION_PICK);
         i.setDataAndType(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*");
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         if (i.resolveActivity(getPackageManager()) == null) {
             i = new Intent(Intent.ACTION_GET_CONTENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
             i.setType("image/*");
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            // 相册不认多选时退回系统选择器，那边支持多选
+            i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         }
         try {
             startActivityForResult(i, REQ_PICK);
@@ -580,8 +615,22 @@ public class MainActivity extends Activity {
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
         if (req == REQ_PICK && res == RESULT_OK && data != null) {
-            Uri uri = data.getData();
-            if (uri != null) loadImage(uri);
+            java.util.ArrayList<Uri> picked = new java.util.ArrayList<>();
+            android.content.ClipData cd = data.getClipData();
+            if (cd != null && cd.getItemCount() > 0) {
+                for (int k = 0; k < cd.getItemCount(); k++) {
+                    Uri u = cd.getItemAt(k).getUri();
+                    if (u != null) picked.add(u);
+                }
+            } else if (data.getData() != null) {
+                picked.add(data.getData());
+            }
+            if (!picked.isEmpty()) {
+                photoUris.clear();
+                photoUris.addAll(picked);
+                photoIndex = 0;
+                loadImage(photoUris.get(0), false);
+            }
         } else if (req == REQ_LOGO && res == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) importCustomLogo(uri);
@@ -668,8 +717,95 @@ public class MainActivity extends Activity {
     private boolean dirty;
     private boolean decodedUpright = true;
 
+    /** 多选时在预览下方显示缩略图条，点一张就切过去 */
+    private void buildFilmstrip() {
+        if (filmstrip == null || filmRow == null) return;
+        filmstrip.removeAllViews();
+        if (photoUris.size() <= 1) {
+            filmRow.setVisibility(View.GONE);
+            return;
+        }
+        filmRow.setVisibility(View.VISIBLE);
+        for (int i = 0; i < photoUris.size(); i++) {
+            final int idx = i;
+            // 边框画在外层容器上：直接画在 ImageView 上会被 clipToOutline 裁掉一半
+            FrameLayout box = new FrameLayout(this);
+            box.setBackground(thumbBg(i == photoIndex));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(44), dp(44));
+            lp.rightMargin = dp(6);
+            box.setLayoutParams(lp);
+
+            ImageView iv = new ImageView(this);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+            ip.setMargins(dp(2), dp(2), dp(2), dp(2));
+            iv.setLayoutParams(ip);
+            iv.setBackground(thumbBg(false));
+            iv.setClipToOutline(true);
+            box.addView(iv);
+            box.setOnClickListener(v -> switchTo(idx));
+            filmstrip.addView(box);
+            loadThumb(iv, photoUris.get(i));
+        }
+        // 让当前选中那张可见
+        final int cur = photoIndex;
+        filmRow.post(() -> {
+            if (cur < filmstrip.getChildCount()) {
+                filmRow.smoothScrollTo(filmstrip.getChildAt(cur).getLeft() - dp(24), 0);
+            }
+        });
+    }
+
+    private android.graphics.drawable.Drawable thumbBg(boolean on) {
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        g.setCornerRadius(dp(10));
+        g.setColor(0x33FFFFFF);
+        g.setStroke(on ? dp(2) : 1, on ? 0xFFFFFFFF : 0x33FFFFFF);
+        return g;
+    }
+
+    private void loadThumb(ImageView iv, Uri uri) {
+        new Thread(() -> {
+            Bitmap b = null;
+            try {
+                b = getContentResolver().loadThumbnail(uri, new android.util.Size(132, 132), null);
+            } catch (Throwable ignored) {
+                // file:// 之类的 URI 没有缩略图接口，自己解一张小图
+            }
+            if (b == null) {
+                try {
+                    BitmapFactory.Options o = new BitmapFactory.Options();
+                    o.inSampleSize = 8;
+                    InputStream in = getContentResolver().openInputStream(uri);
+                    b = BitmapFactory.decodeStream(in, null, o);
+                    if (in != null) in.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            final Bitmap bb = b;
+            if (bb != null) ui.post(() -> iv.setImageBitmap(bb));
+        }).start();
+    }
+
+    private void switchTo(int idx) {
+        if (idx < 0 || idx >= photoUris.size() || idx == photoIndex) return;
+        photoIndex = idx;
+        loadImage(photoUris.get(idx), true);
+        buildFilmstrip();
+    }
+
+    private int dp(float v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
     private void loadImage(Uri uri) {
-        ProgressDialog pd = ProgressDialog.show(this, "", "读取照片…", true, false);
+        loadImage(uri, false);
+    }
+
+    private void loadImage(Uri uri, boolean quiet) {
+        ProgressDialog pd = quiet ? null : ProgressDialog.show(this, "", "读取照片…", true, false);
         new Thread(() -> {
             try {
                 srcUri = uri;
@@ -707,13 +843,19 @@ public class MainActivity extends Activity {
                     backdrop.setImageBitmap(bg);
                     applyUiGlass();
                     fillFromMeta();
-                    pd.dismiss();
+                    if (pd != null) pd.dismiss();
+                    buildFilmstrip();
                     schedulePreview();
+                    if (afterLoad != null) {
+                        Runnable r = afterLoad;
+                        afterLoad = null;
+                        ui.postDelayed(r, 150);
+                    }
                 });
             } catch (Throwable e) {
                 final String msg = String.valueOf(e.getMessage());
                 runOnUiThread(() -> {
-                    pd.dismiss();
+                    if (pd != null) pd.dismiss();
                     toast("读取失败：" + msg);
                 });
             }
@@ -857,7 +999,8 @@ public class MainActivity extends Activity {
         }
 
         boolean hasVideo = meta != null && meta.trailerVideoLength > 0;
-        panel.videoOn = hasVideo;
+        // 不要用 hasVideo 覆盖用户的开关：普通照片没有视频段，覆盖之后
+        // 再打开实况照片时开关还停在「关」，看起来就像默认关闭了。
 
         // 有视频段才显示「播放」，否则点了也没意义
         if (btnPlay != null) btnPlay.setVisibility(hasVideo ? View.VISIBLE : View.GONE);
@@ -1224,7 +1367,43 @@ public class MainActivity extends Activity {
     /* ── 导出 ── */
 
     private void export() {
+        if (photoUris.size() > 1) {
+            startBatch();
+            return;
+        }
         if (photo == null) return;
+        exportOne(null);
+    }
+
+    /* ── 批量导出：一张接一张，前一张写完再切下一张 ── */
+
+    private int batchOk;
+
+    private void startBatch() {
+        batchOk = 0;
+        photoIndex = -1;
+        nextBatch(0);
+    }
+
+    private void nextBatch(final int i) {
+        if (i >= photoUris.size()) {
+            toast("已导出 " + batchOk + " / " + photoUris.size() + " 张到 Pictures/VitreLens");
+            photoIndex = Math.max(0, Math.min(photoIndex, photoUris.size() - 1));
+            buildFilmstrip();
+            return;
+        }
+        photoIndex = i;
+        buildFilmstrip();
+        // 加载完这一张再导出，导出完再进下一张
+        afterLoad = () -> exportOne(() -> nextBatch(i + 1));
+        loadImage(photoUris.get(i), true);
+    }
+
+    private void exportOne(final Runnable onDone) {
+        if (photo == null) {
+            if (onDone != null) onDone.run();
+            return;
+        }
         final WatermarkPainter.Style st = style.copy();
         final boolean wantVideo = panel.videoOn;
         ProgressDialog pd = ProgressDialog.show(this, "", "生成中…", true, false);
@@ -1264,7 +1443,9 @@ public class MainActivity extends Activity {
                 bos = null;
                 dirty = true;
 
-                String name = "VL_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) + ".jpg";
+                // 带毫秒：批量导出时相邻两张经常落在同一秒，会生成 "xxx (1).jpg" 这种重名
+                String name = "VL_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
+                        .format(new Date()) + ".jpg";
                 ContentValues cv = new ContentValues();
                 cv.put(MediaStore.Images.Media.DISPLAY_NAME, name);
                 cv.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
@@ -1326,6 +1507,7 @@ public class MainActivity extends Activity {
                 Log.i("VitreLens", "导出自检: " + hdrNote + "（源图 hdr=" + (meta != null && meta.hdr) + "）");
                 final String outMsg = msg;
                 final boolean warn = videoWarn != null;
+                batchOk++;
                 ui.post(() -> {
                     pd.dismiss();
                     if (warn) {
@@ -1338,6 +1520,7 @@ public class MainActivity extends Activity {
                     } else {
                         toast(outMsg);
                     }
+                    if (onDone != null) onDone.run();
                 });
             } catch (Throwable e) {
                 if (outUri != null) {
@@ -1349,11 +1532,17 @@ public class MainActivity extends Activity {
                 final String msg = (m == null || m.trim().isEmpty()) ? e.getClass().getSimpleName() : m;
                 ui.post(() -> {
                     pd.dismiss();
-                    new AlertDialog.Builder(this)
-                            .setTitle("导出失败")
-                            .setMessage(msg)
-                            .setPositiveButton("好", null)
-                            .show();
+                    if (onDone != null) {
+                        // 批量时弹框会挡住后面每一张，只记日志继续
+                        Log.w("VitreLens", "第 " + (photoIndex + 1) + " 张导出失败：" + msg);
+                    } else {
+                        new AlertDialog.Builder(this)
+                                .setTitle("导出失败")
+                                .setMessage(msg)
+                                .setPositiveButton("好", null)
+                                .show();
+                    }
+                    if (onDone != null) onDone.run();
                 });
             }
         });
