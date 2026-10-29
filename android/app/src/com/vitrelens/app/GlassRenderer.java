@@ -260,7 +260,9 @@ class GlassRenderer {
         GLES20.glUniform1f(uRefl, st.reflPct / 100f);
         GLES20.glUniform1f(uTrans, st.transPct / 100f);
         GLES20.glUniform1f(uSegments, Math.max(4, st.segments));
-        GLES20.glUniform3f(uTint, 0.93f, 0.965f, 1.045f);
+        // 原来是 (0.93, 0.965, 1.045)，b > 1 会直接加强蓝色。改成近中性，
+        // 让玻璃靠折射和背景本身出颜色，而不是一层固定的冷色滤镜。
+        GLES20.glUniform3f(uTint, 0.99f, 0.99f, 1.0f);
         GLES20.glUniform1f(uTintOn, st.tintOn ? 1f : 0f);
         GLES20.glUniform1f(uGloss, st.glossPct / 100f);
         GLES20.glUniform1f(uShadow, st.shadowPct / 100f);

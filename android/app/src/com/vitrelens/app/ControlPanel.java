@@ -123,7 +123,7 @@ class ControlPanel {
         // ── 03 液态玻璃
         LinearLayout c3 = card(root, "03", "液态玻璃");
         label(c3, "预设");
-        segmented(c3, new String[]{"清透", "磨砂", "厚玻璃"},
+        segmented(c3, new String[]{"Apple 常规", "Apple 清透", "磨砂", "厚玻璃"},
                 () -> activeBuiltin, v -> applyPreset(v), () -> activeBuiltin);
         hint(c3, "预设会覆盖下面所有玻璃参数，可再单独微调");
 
@@ -190,11 +190,16 @@ class ControlPanel {
         // 预设必须覆盖**全部**玻璃参数，否则选了预设某些滑块还停在旧值
         // {ior, radius, depth, thickness, rough, disp, refl, trans, gloss, shadow, white, warp, segments}
         float[][] p = {
-                {1.46f, 100, 34, 42, 12, 18, 90, 100, 45, 40, 0, 90, 64},
-                {1.30f, 100, 46, 56, 72, 10, 68, 96, 26, 34, 8, 70, 48},
+                // Apple 常规：模糊负责材质、厚度克制、反射与色散都收着
+                {1.46f, 100, 24, 36, 20, 6, 28, 98, 28, 18, 0, 0, 64},
+                // Apple 清透：基本清晰，略厚一点点
+                {1.46f, 100, 28, 44, 4, 8, 32, 100, 32, 14, 0, 0, 64},
+                // 磨砂：在常规基础上只加模糊，不叠加厚度/反射/色散
+                {1.40f, 100, 30, 44, 72, 6, 30, 96, 24, 20, 4, 0, 64},
+                // 厚玻璃：保留原来的强风格，作为个性化预设
                 {1.72f, 100, 72, 88, 8, 46, 100, 100, 82, 58, 0, 130, 96}
         };
-        float[] v = p[Math.max(0, Math.min(2, idx))];
+        float[] v = p[Math.max(0, Math.min(p.length - 1, idx))];
         st.ior = v[0];
         st.radiusPct = v[1];
         st.depthPct = v[2];

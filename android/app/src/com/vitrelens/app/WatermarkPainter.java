@@ -54,17 +54,17 @@ class WatermarkPainter {
         boolean italic = true;
 
         // 玻璃（参数对齐 @specy/liquid-glass 的 GlassStyle）
-        float ior = 1.55f;
+        float ior = 1.46f;
         float radiusPct = 100f;
-        float depthPct = 36f;      // 边缘收边宽度 = 玻璃深度
-        float thicknessPct = 72f;   // 玻璃厚度
-        float roughPct = 8f;       // 粗糙度
-        float dispPct = 40f;       // 色散
-        float warpPct = 100f;      // 横向扭曲
-        float reflPct = 90f;       // 反射率
-        float transPct = 100f;     // 透射率
-        float glossPct = 50f;      // 高光
-        float shadowPct = 40f;     // 投影
+        float depthPct = 24f;      // 边缘收边宽度 = 玻璃深度
+        float thicknessPct = 36f;   // 玻璃厚度
+        float roughPct = 20f;       // 粗糙度
+        float dispPct = 6f;       // 色散
+        float warpPct = 0f;      // 横向扭曲
+        float reflPct = 28f;       // 反射率
+        float transPct = 98f;     // 透射率
+        float glossPct = 28f;      // 高光
+        float shadowPct = 18f;     // 投影
         float whitePct = 0f;       // 加白
         boolean tintOn = true;     // 色调
         int segments = 64;         // 法线采样细分

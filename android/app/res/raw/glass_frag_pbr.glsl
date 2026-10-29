@@ -166,24 +166,29 @@ void main() {
     transmitted.b = sampleTransmission(uv, vec2(clamp(rayB.x, -aL, aR), clamp(rayB.y, -aT, aB)), roughEff).b;
 
     // three.js: totalDiffuse = mix(diffuse, transmitted, transmission)
-    vec3 env = vec3(0.86, 0.90, 0.96);
+    // 中性环境色。原来是 (0.86, 0.90, 0.96) 的冷蓝调，整块玻璃都偏蓝，
+    // 这也是「不像苹果」的来源之一：先做中性版本，才看得出折射本身对不对。
+    vec3 env = vec3(0.96);
     vec3 col = mix(env, transmitted, clamp(u_trans, 0.0, 1.0));
 
     if (u_tintOn > 0.5) col *= u_tint;
 
     // 反射：菲涅尔 + 高光（roughness 影响高光锐度）
     float cosV = clamp(N.z, 0.0, 1.0);
-    float fres = pow(1.0 - cosV, 4.0);
+    // Schlick 五次方：平面中心更干净，反射集中在斜率大的边缘
+    float fres = pow(1.0 - cosV, 5.0);
     float F = clamp((0.04 + 0.96 * fres) * u_refl, 0.0, 1.0);
     vec3 L = normalize(vec3(-0.45, -0.72, 0.55));
     float shininess = mix(180.0, 18.0, clamp(u_rough, 0.0, 1.0));
     float spec = pow(max(dot(reflect(vec3(0.0, 0.0, -1.0), N), L), 0.0), shininess);
     col = mix(col, env, F);
-    col += vec3(1.0) * spec * u_gloss * (1.0 - clamp(u_rough, 0.0, 1.0) * 0.8) * 1.1;
+    // 高光倍率 1.1 → 0.7：原来白得发闪，塑料感很重
+    col += vec3(1.0) * spec * u_gloss * (1.0 - clamp(u_rough, 0.0, 1.0) * 0.8) * 0.7;
 
     // 边缘细亮线
     float rim = 1.0 - smoothstep(0.0, max(2.4 * u_scale, 1.0), d);
-    col += vec3(1.0) * rim * 0.26 * u_refl * clamp(-N.y + 0.75, 0.0, 1.0);
+    // 边缘亮线 0.26 → 0.14：目标是边缘随法线柔和明暗，而不是完整一圈白边
+    col += vec3(1.0) * rim * 0.14 * u_refl * clamp(-N.y + 0.75, 0.0, 1.0);
 
     col = mix(col, vec3(1.0), clamp(u_white, 0.0, 1.0) * 0.85);
 
