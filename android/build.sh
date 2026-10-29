@@ -121,13 +121,17 @@ echo "== 2/6 aapt2 link =="
   --min-sdk-version 29 --target-sdk-version 34 --auto-add-overlay
 
 echo "== 3/6 javac =="
-find app/src build/gen -name "*.java" > build/sources.txt
+# 文件名带 PID：百度网盘在同步这个目录，上一次的 javac.log 句柄还没释放时
+# 重定向会直接失败（"Device or resource busy"），整个构建在 javac 这一步挂掉。
+SRCLIST="build/sources.$$.txt"
+JLOG="build/javac.$$.log"
+find app/src build/gen -name "*.java" > "$SRCLIST"
 set +e
 "$JAVAC" -encoding UTF-8 -source 8 -target 8 -nowarn -Xlint:none \
-  -classpath "$PLATFORM" -d build/classes @build/sources.txt > build/javac.log 2>&1
+  -classpath "$PLATFORM" -d build/classes @"$SRCLIST" > "$JLOG" 2>&1
 RC=$?
 set -e
-grep -v "^注:" build/javac.log || true
+grep -v "^注:" "$JLOG" || true
 if [ $RC -ne 0 ]; then
   echo "!! javac 失败，退出码 $RC"
   exit 1
