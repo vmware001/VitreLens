@@ -8,8 +8,12 @@ import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
@@ -28,6 +32,13 @@ class ControlPanel {
     private final WatermarkPainter.Style st;
     private final Runnable onChange;
     private final List<Runnable> refreshers = new ArrayList<>();
+    /** 右侧的四个选项页，同一时间只显示一个 */
+    private final List<LinearLayout> pages = new ArrayList<>();
+    private final List<TextView> railButtons = new ArrayList<>();
+    private LinearLayout rail;
+    private LinearLayout railPill;
+    private ScrollView scroll;
+    private int pageIndex = 0;
 
     ControlPanel(Activity act, WatermarkPainter.Style st, Runnable onChange) {
         this.act = act;
@@ -35,11 +46,21 @@ class ControlPanel {
         this.onChange = onChange;
     }
 
-    List<Runnable> build(LinearLayout root) {
-        root.removeAllViews();
+    List<Runnable> build(LinearLayout rail, LinearLayout content, ScrollView scroll) {
+        this.rail = rail;
+        this.scroll = scroll;
+        // 玻璃面板挂在滚动区上（不是内容上），这样滚动时面板固定、只有选项在动
+        scroll.setBackground(new GlassCardDrawable(dp(22), 0x2BFFFFFF));
+        scroll.setClipToOutline(true);
+        scroll.setPadding(dp(14), dp(12), dp(14), dp(16));
+        rail.removeAllViews();
+        content.removeAllViews();
+        pages.clear();
+        railButtons.clear();
+        refreshers.clear();
 
         // ── 01 水印内容
-        LinearLayout c1 = card(root, "01", "水印内容");
+        LinearLayout c1 = page(content);
         textRow(c1, "相机名称", () -> st.name, s -> st.name = s, "OPPO Find X9 Ultra");
         textRow(c1, "副标题", () -> st.subtitle, s -> st.subtitle = s, "哈苏影像 · 光影追寻");
         textRow(c1, "拍摄参数", () -> st.params, s -> st.params = s, "23mm ƒ/1.8 1/287s ISO50");
@@ -74,7 +95,7 @@ class ControlPanel {
         });
 
         // ── 02 版式
-        LinearLayout c2 = card(root, "02", "版式");
+        LinearLayout c2 = page(content);
         label(c2, "水印位置");
         segmented(c2, new String[]{"左下", "居中", "右下"},
                 () -> alignIndex(st.align),
@@ -121,9 +142,9 @@ class ControlPanel {
                 (i, on) -> st.italic = on);
 
         // ── 03 液态玻璃
-        LinearLayout c3 = card(root, "03", "液态玻璃");
+        LinearLayout c3 = page(content);
         label(c3, "预设");
-        segmented(c3, new String[]{"Apple 常规", "Apple 清透", "磨砂", "厚玻璃"},
+        segmented(c3, new String[]{"常规", "清透", "磨砂", "厚玻璃"},
                 () -> activeBuiltin, v -> applyPreset(v), () -> activeBuiltin);
         hint(c3, "预设会覆盖下面所有玻璃参数，可再单独微调");
 
@@ -174,7 +195,7 @@ class ControlPanel {
                 + "越接近系统材质越应该保持 0。");
 
         // ── 04 导出
-        LinearLayout c4 = card(root, "04", "导出");
+        LinearLayout c4 = page(content);
         chips(c4, new String[]{"实况照片水印"},
                 () -> new boolean[]{videoOn},
                 (i, on) -> videoOn = on);
@@ -187,6 +208,18 @@ class ControlPanel {
                 p -> Math.round(p) + "%");
         hint(c4, "实测 OPPO 实况照片的视频取景约为照片的 94%（贴着底边裁），"
                 + "所以视频里的水印默认上移 2%、宽度收到 95%。不满意可自己微调。");
+
+        // 左侧竖排按钮：整列做成一颗玻璃胶囊，里面的段被选中时高亮
+        railPill = new LinearLayout(act);
+        railPill.setOrientation(LinearLayout.VERTICAL);
+        railPill.setPadding(dp(4), dp(4), dp(4), dp(4));
+        railPill.setBackground(new GlassCardDrawable(dp(22), 0x3DFFFFFF));
+        rail.addView(railPill, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        String[] names = {"内容", "版式", "玻璃", "导出"};
+        for (int i = 0; i < names.length; i++) railButton(names[i], i);
+        showPage(0);
 
         return refreshers;
     }
@@ -407,37 +440,60 @@ class ControlPanel {
 
     /* ── 构件 ── */
 
-    private LinearLayout card(LinearLayout root, String num, String title) {
-        LinearLayout head = new LinearLayout(act);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(dp(6), dp(16), dp(6), dp(6));
-
-        TextView n = new TextView(act);
-        n.setText(num);
-        n.setTextSize(11);
-        n.setTextColor(0x88FFFFFF);
-        n.setLetterSpacing(0.12f);
-        n.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-        head.addView(n);
-
-        TextView t = new TextView(act);
-        t.setText(title);
-        t.setTextSize(15);
-        t.setTextColor(0xF2FFFFFF);
-        t.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-        t.setPadding(dp(10), 0, 0, 0);
-        head.addView(t);
-        root.addView(head, matchWrap());
-
+    /**
+     * 一页选项 = 一张玻璃卡片。分区名字交给左边的按钮，卡片里不再重复标题。
+     * 默认隐藏，由 showPage() 控制显示哪一个。
+     */
+    private LinearLayout page(LinearLayout content) {
         LinearLayout c = new LinearLayout(act);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(new GlassCardDrawable(dp(22), 0x2BFFFFFF));
-        c.setPadding(dp(14), dp(6), dp(14), dp(10));
-        LinearLayout.LayoutParams lp = matchWrap();
-        lp.bottomMargin = dp(14);
-        root.addView(c, lp);
+        c.setVisibility(View.GONE);
+        content.addView(c, matchWrap());
+        pages.add(c);
         return c;
+    }
+
+    /** 左栏胶囊里的一段 */
+    private void railButton(String label, final int idx) {
+        TextView t = new TextView(act);
+        t.setText(label);
+        t.setTextSize(12.5f);
+        t.setGravity(Gravity.CENTER);
+        t.setTextColor(0x8AFFFFFF);
+        t.setClickable(true);
+        t.setOnClickListener(v -> showPage(idx));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        if (idx > 0) lp.topMargin = dp(4);
+        railPill.addView(t, lp);
+        railButtons.add(t);
+    }
+
+    /** 选中段的底：上亮下暗的白，模拟玻璃被按下去那一块 */
+    private Drawable segBg() {
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0x99FFFFFF, 0x59FFFFFF});
+        g.setShape(GradientDrawable.RECTANGLE);
+        g.setCornerRadius(dp(18));
+        g.setStroke(Math.max(1, Math.round(dp(0.8f))), 0xB3FFFFFF);
+        return g;
+    }
+
+    /** 切换右侧显示的选项组 */
+    void showPage(int idx) {
+        if (pages.isEmpty()) return;
+        int i = Math.max(0, Math.min(pages.size() - 1, idx));
+        pageIndex = i;
+        for (int k = 0; k < pages.size(); k++) {
+            pages.get(k).setVisibility(k == i ? View.VISIBLE : View.GONE);
+        }
+        for (int k = 0; k < railButtons.size(); k++) {
+            boolean on = k == i;
+            TextView t = railButtons.get(k);
+            t.setBackground(on ? segBg() : null);
+            t.setTextColor(on ? 0xFF1A1A1A : 0x8AFFFFFF);
+            t.setTypeface(Typeface.create("sans-serif", on ? Typeface.BOLD : Typeface.NORMAL));
+        }
+        if (scroll != null) scroll.scrollTo(0, 0);
     }
 
     /**

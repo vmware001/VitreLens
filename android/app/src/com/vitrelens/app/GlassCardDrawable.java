@@ -86,6 +86,14 @@ class GlassCardDrawable extends Drawable {
         c.drawRoundRect(inner, rad, rad, stroke);
     }
 
+    /** 供 View.setClipToOutline 使用：滚动区用圆角裁掉溢出的内容 */
+    @Override
+    public void getOutline(android.graphics.Outline o) {
+        android.graphics.Rect b = getBounds();
+        float rad = Math.min(radius, Math.min(b.width(), b.height()) / 2f);
+        o.setRoundRect(b, rad);
+    }
+
     @Override public void setAlpha(int alpha) { }
     @Override public void setColorFilter(ColorFilter cf) { }
     @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }

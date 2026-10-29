@@ -176,23 +176,41 @@
                 android:background="@drawable/bg_chip" />
         </FrameLayout>
 
-        <ScrollView
+        <!-- 下半部分：左边一排按钮，点哪个右边就换成哪一组选项 -->
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
+            android:orientation="horizontal"
             android:paddingStart="12dp"
             android:paddingEnd="12dp"
-            android:clipToPadding="false"
-            android:scrollbars="none">
+            android:baselineAligned="false">
 
             <LinearLayout
-                android:id="@+id/controls"
-                android:layout_width="match_parent"
+                android:id="@+id/rail"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:paddingTop="6dp"
-                android:paddingBottom="20dp" />
-        </ScrollView>
+                android:paddingTop="6dp" />
+
+            <ScrollView
+                android:id="@+id/scroll"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_marginStart="10dp"
+                android:clipToPadding="false"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/controls"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="20dp" />
+            </ScrollView>
+        </LinearLayout>
 
         <TextView
             android:id="@+id/status"

@@ -186,7 +186,7 @@ public class MainActivity extends Activity {
 
         loadCustomLogo();
         panel = new ControlPanel(this, style, this::schedulePreview);
-        refreshers = panel.build(controls);
+        refreshers = panel.build(findViewById(R.id.rail), controls, findViewById(R.id.scroll));
 
         status.setText(glass == null
                 ? "液态玻璃初始化失败（" + glError + "），导出将只含水印文字"
