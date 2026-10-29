@@ -60,6 +60,8 @@ public class MainActivity extends Activity {
     private boolean checkingUpdate;
     // 拖动液态玻璃的形变（-1~1），由阻尼弹簧弹回 0；导出永远用 0
     private float jellyX, jellyY, jellyVX, jellyVY, jellyTX, jellyTY;
+    /** 长按程度 0~1：手指压下去，玻璃整块鼓起 */
+    private float jellyP, jellyPV, jellyPT;
     private float jellyDownX, jellyDownY;
     private boolean jellyActive, jellyRunning;
     private long jellyLast;
@@ -164,6 +166,9 @@ public class MainActivity extends Activity {
                     jellyDownX = e.getX();
                     jellyDownY = e.getY();
                     jellyActive = true;
+                    // 按住不动 380ms 视为长按：玻璃被「按」得鼓起
+                    ui.removeCallbacks(jellyLongPress);
+                    ui.postDelayed(jellyLongPress, 380);
                     return true;
                 case MotionEvent.ACTION_MOVE: {
                     if (!jellyActive) return false;
@@ -174,6 +179,13 @@ public class MainActivity extends Activity {
                     // 归一化到「0.6 个水印宽度」：拖到这个距离就是满形变
                     float denom = Math.max(1f,
                             previewBase.getWidth() * (style.widthPct / 100f) * 0.6f);
+                    // 手指一旦移动就不再算长按
+                    if (Math.hypot(dx, dy) > 10f / Math.max(scale, 1e-4)) {
+                        ui.removeCallbacks(jellyLongPress);
+                        if (jellyPT > 0f) {
+                            jellyPT = 0f;
+                        }
+                    }
                     jellyTX = Math.max(-1f, Math.min(1f, dx / denom));
                     jellyTY = Math.max(-1f, Math.min(1f, dy / denom));
                     startJelly();
@@ -183,8 +195,10 @@ public class MainActivity extends Activity {
                 case MotionEvent.ACTION_CANCEL:
                     if (!jellyActive) return false;
                     jellyActive = false;
+                    ui.removeCallbacks(jellyLongPress);
                     jellyTX = 0f;
                     jellyTY = 0f;
+                    jellyPT = 0f;
                     startJelly();
                     return true;
                 default:
@@ -998,9 +1012,26 @@ public class MainActivity extends Activity {
             final Bitmap res = out;
             ui.post(() -> {
                 if (res == null) return;
-                android.graphics.drawable.BitmapDrawable d =
-                        new android.graphics.drawable.BitmapDrawable(getResources(), res);
-                v.setBackground(d);
+                // 着色器在圆角之外原样输出背景像素（mask=0），贴到方形 View 上
+                // 四个角就会露出「没处理过的原始背景」—— 看起来就是四个硬棱角。
+                // 这里按圆角把四角抠成透明，露出下面的整屏背景。
+                Bitmap masked = res;
+                try {
+                    masked = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
+                    Canvas mc = new Canvas(masked);
+                    mc.drawBitmap(res, 0, 0, null);
+                    android.graphics.Paint mp = new android.graphics.Paint(
+                            android.graphics.Paint.ANTI_ALIAS_FLAG);
+                    mp.setColor(0xFF000000);
+                    mp.setXfermode(new android.graphics.PorterDuffXfermode(
+                            android.graphics.PorterDuff.Mode.DST_IN));
+                    mc.drawRoundRect(new android.graphics.RectF(0, 0, vw, vh),
+                            radiusPx, radiusPx, mp);
+                } catch (Throwable ignored) {
+                    masked = res;
+                }
+                v.setBackground(new android.graphics.drawable.BitmapDrawable(
+                        getResources(), masked));
             });
         });
     }
@@ -1010,8 +1041,11 @@ public class MainActivity extends Activity {
         WatermarkPainter.Style s = new WatermarkPainter.Style();
         s.ior = 1.46f;
         s.radiusPct = 100f;
-        s.depthPct = 18f;
-        s.thicknessPct = 14f;
+        // 界面面板尺寸差很大，用像素而不是百分比，两块才像同一个材质。
+        // 斜面必须明显小于圆角（22dp≈44px），否则圆角处会被折出棱角。
+        s.pixelUnits = true;
+        s.depthPct = 14f;
+        s.thicknessPct = 10f;
         s.roughPct = 52f;
         s.dispPct = 5f;
         s.reflPct = 22f;
@@ -1020,7 +1054,7 @@ public class MainActivity extends Activity {
         s.shadowPct = 0f;
         s.whitePct = 0f;
         s.warpPct = 0f;
-        s.edgePct = 120f;
+        s.edgePct = 30f;
         s.segments = 64;
         s.tintOn = true;
         return s;
@@ -1033,6 +1067,14 @@ public class MainActivity extends Activity {
         int vw = preview.getWidth(), vh = preview.getHeight();
         if (vw == 0 || vh == 0) return 0f;
         return Math.min(vw / (float) b.getWidth(), vh / (float) b.getHeight());
+    }
+
+    private final Runnable jellyLongPress = this::onJellyLongPress;
+
+    private void onJellyLongPress() {
+        if (!jellyActive) return;
+        jellyPT = 1f;
+        startJelly();
     }
 
     private void startJelly() {
@@ -1054,14 +1096,19 @@ public class MainActivity extends Activity {
         jellyVY += ((jellyTY - jellyY) * k - jellyVY * c) * dt;
         jellyX += jellyVX * dt;
         jellyY += jellyVY * dt;
+        // 按压回弹慢一点，像真的按下去再弹起来
+        jellyPV += ((jellyPT - jellyP) * 420f - jellyPV * 30f) * dt;
+        jellyP += jellyPV * dt;
 
         boolean settled = !jellyActive
                 && Math.abs(jellyTX - jellyX) < 0.004f && Math.abs(jellyVX) < 0.02f
-                && Math.abs(jellyTY - jellyY) < 0.004f && Math.abs(jellyVY) < 0.02f;
+                && Math.abs(jellyTY - jellyY) < 0.004f && Math.abs(jellyVY) < 0.02f
+                && Math.abs(jellyPT - jellyP) < 0.004f && Math.abs(jellyPV) < 0.02f;
         if (settled) {
             jellyX = jellyTX;
             jellyY = jellyTY;
-            jellyVX = jellyVY = 0f;
+            jellyP = jellyPT;
+            jellyVX = jellyVY = jellyPV = 0f;
             jellyRunning = false;
             jellyLast = 0;
             runPreviewNow();
@@ -1090,7 +1137,7 @@ public class MainActivity extends Activity {
         if (previewBase == null) return;
         final WatermarkPainter.Style st = style.copy();
         final int seq = ++previewSeq;
-        final float jx = jellyX, jy = jellyY;
+        final float jx = jellyX, jy = jellyY, jp = jellyP;
         previewBusy = true;
         glQueue.execute(() -> {
             Bitmap out = null;
@@ -1099,7 +1146,7 @@ public class MainActivity extends Activity {
                 if (base != null) {
                     Bitmap work = base.copy(Bitmap.Config.ARGB_8888, true);
                     if (work != null) {
-                        out = composer.composeOn(work, work.getWidth(), work.getHeight(), st, jx, jy);
+                        out = composer.composeOn(work, work.getWidth(), work.getHeight(), st, jx, jy, jp);
                     }
                 }
             } catch (Throwable ignored) {

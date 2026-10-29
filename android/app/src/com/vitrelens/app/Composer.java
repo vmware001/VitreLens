@@ -22,13 +22,18 @@ class Composer {
 
     /** base 必须可变；结果为 base 本身 */
     Bitmap composeOn(Bitmap base, int W, int H, WatermarkPainter.Style st) {
-        return composeOn(base, W, H, st, 0f, 0f);
+        return composeOn(base, W, H, st, 0f, 0f, 0f);
     }
 
     /** jsx/jsy 是拖动形变（-1~1），只有预览会传非 0 */
     Bitmap composeOn(Bitmap base, int W, int H, WatermarkPainter.Style st, float jsx, float jsy) {
+        return composeOn(base, W, H, st, jsx, jsy, 0f);
+    }
+
+    Bitmap composeOn(Bitmap base, int W, int H, WatermarkPainter.Style st,
+                     float jsx, float jsy, float jp) {
         Canvas c = new Canvas(base);
-        WatermarkPainter.Layout L = WatermarkPainter.layout(W, H, st, jsx, jsy);
+        WatermarkPainter.Layout L = WatermarkPainter.layout(W, H, st, jsx, jsy, jp);
         WatermarkPainter.Panel panel = L.panel;
 
         // 亮度要在画玻璃之前量：玻璃本身会改变底色。顺带决定「不透明档」用白还是黑。

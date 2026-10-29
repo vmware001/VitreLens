@@ -34,6 +34,10 @@ class WatermarkPainter {
         boolean autoText = true;
         /** 背景偏暗：不透明档的实色跟着走（浅色主题近白、深色主题近黑） */
         boolean themeDark;
+        /** true 时 depthPct / thicknessPct / edgePct 的单位是像素，而不是面板高度的百分比。
+         *  界面上的玻璃面板尺寸差很大（左栏 54×204dp、右面板 272×248dp），
+         *  用百分比会让两块的斜面宽度差出好几倍，看起来根本不是一个材质。 */
+        boolean pixelUnits;
         /** 水平位置：0 = 贴左，50 = 居中，100 = 贴右 */
         float posXPct = 50f;
         String align = "center";       // 已废弃，仅保留字段兼容旧预设
@@ -86,7 +90,7 @@ class WatermarkPainter {
             s.showSubtitle = showSubtitle; s.showBrand = showBrand;
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
-            s.posXPct = posXPct; s.autoText = autoText; s.themeDark = themeDark;
+            s.posXPct = posXPct; s.autoText = autoText; s.themeDark = themeDark; s.pixelUnits = pixelUnits;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
             s.logoRight = logoRight;
@@ -129,7 +133,7 @@ class WatermarkPainter {
     private static final float TRACK_SUB = 0.02f;
 
     static Layout layout(int W, int H, Style st) {
-        return layout(W, H, st, 0f, 0f);
+        return layout(W, H, st, 0f, 0f, 0f);
     }
 
     /**
@@ -137,6 +141,13 @@ class WatermarkPainter {
      * @param jsy 垂直形变，-1~1
      */
     static Layout layout(int W, int H, Style st, float jsx, float jsy) {
+        return layout(W, H, st, jsx, jsy, 0f);
+    }
+
+    /**
+     * @param jp 长按程度 0~1：手指压下去，整块鼓起（变宽变高）
+     */
+    static Layout layout(int W, int H, Style st, float jsx, float jsy, float jp) {
         Layout L = new Layout();
         if (st.name == null) st.name = "";
         if (st.subtitle == null) st.subtitle = "";
@@ -219,21 +230,25 @@ class WatermarkPainter {
             float bottomGap = st.gapPct * W / 100f;
             float panelY = Math.max(0, H - bottomGap - panelH);
 
-            // 拖动手感：以面板中心为基准做挤压/拉伸，并让中心跟着手指走一部分，
-            // 看着像一块被手指捏住拉长的果冻；松手后由 spring 弹回。
-            if (jsx != 0f || jsy != 0f) {
+            // 拖动手感：像拉一块橡皮泥 —— 左右拉都把中段拉细（变窄），上下拉则顺着
+            // 方向变高/变矮，长按压下去整块鼓起。形变方向永远跟着位移走，不会反着缩。
+            if (jsx != 0f || jsy != 0f || jp != 0f) {
                 float baseW = panelW, baseH = panelH;
                 float cx = panelX + baseW / 2f;
                 float cy = panelY + baseH / 2f;
-                // 以中心为基准做「挤压/拉伸」：往右拉变宽变矮，往左拉变窄变高。
-                // 水印本来就占 92% 宽，整块平移会把两侧文字直接推出画幅，
-                // 所以位移只给到剩余空隙那么多（几乎为 0），形变才是主体。
-                panelW = baseW * (1f + jsx * 0.14f);
-                panelH = baseH * Math.max(0.85f, 1f + jsy * 0.20f - Math.abs(jsx) * 0.16f);
-                float slack = Math.max(0f, (W - panelW) / 2f) * 0.8f;
-                float push = Math.max(-slack, Math.min(slack, jsx * baseW * 0.12f));
+
+                float wScale = 1f - Math.abs(jsx) * 0.20f;   // 左右都是收窄
+                float hScale = 1f - jsy * 0.22f;             // 往上拉变高、往下拉变矮
+                wScale *= 1f + jp * 0.14f;                   // 长按：鼓起
+                hScale *= 1f + jp * 0.26f;
+                panelW = baseW * Math.max(0.72f, wScale);
+                panelH = baseH * Math.max(0.80f, hScale);
+
+                // 收窄之后两侧才有余量，位移只用到这部分，不会把文字推出画幅
+                float slack = Math.max(0f, (W - panelW) / 2f) * 0.9f;
+                float push = Math.max(-slack, Math.min(slack, jsx * baseW * 0.10f));
                 cx += push;
-                cy += jsy * baseH * 0.22f;
+                cy += Math.max(-slack, Math.min(slack, jsy * baseH * 0.30f));
                 panelX = cx - panelW / 2f;
                 panelY = cy - panelH / 2f;
             }

@@ -319,14 +319,20 @@ class GlassRenderer {
         if (st.themeDark) GLES20.glUniform3f(uOpaque, 0.07f, 0.07f, 0.08f);
         else GLES20.glUniform3f(uOpaque, 0.97f, 0.97f, 0.98f);
         GLES20.glUniform1f(uIor, st.ior);
-        final float depthPx = Math.max(2f, p.h * 0.5f * (st.depthPct / 100f));
+        // 像素单位时直接就是 px；否则按面板高度的百分比换算（水印用这条）
+        final float depthPx = st.pixelUnits
+                ? Math.max(2f, st.depthPct)
+                : Math.max(2f, p.h * 0.5f * (st.depthPct / 100f));
         GLES20.glUniform1f(uDepth, depthPx);
         // 边缘最大采样深度。取斜面宽度的倍数而不是固定像素：
         // 比值 > 1 时外沿那圈会折叠成镜像，这才是苹果玻璃边缘的观感。
         // 上限取面板高度的 45%，否则「厚玻璃」那种大 depth 会把整块面板折起来。
-        GLES20.glUniform1f(uEdge, Math.min(
-                Math.max(0f, st.edgePct / 100f) * depthPx * 2.0f, p.h * 0.45f));
-        GLES20.glUniform1f(uThickness, Math.max(1f, st.thicknessPct / 100f * p.h * 1.1f));
+        GLES20.glUniform1f(uEdge, st.pixelUnits
+                ? Math.max(0f, st.edgePct)
+                : Math.min(Math.max(0f, st.edgePct / 100f) * depthPx * 2.0f, p.h * 0.45f));
+        GLES20.glUniform1f(uThickness, st.pixelUnits
+                ? Math.max(1f, st.thicknessPct)
+                : Math.max(1f, st.thicknessPct / 100f * p.h * 1.1f));
         GLES20.glUniform1f(uRough, st.roughPct / 100f);
         GLES20.glUniform1f(uDisp, st.dispPct / 100f);
         GLES20.glUniform1f(uWarp, st.warpPct / 100f);
