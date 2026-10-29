@@ -18,12 +18,16 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
+import android.media.MediaPlayer;
+import android.view.Surface;
+import android.view.TextureView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
@@ -46,6 +50,11 @@ public class MainActivity extends Activity {
     private String versionName = "1.0";
     private boolean checkingUpdate;
     private Bitmap lastComposed;
+    private TextureView videoView;
+    private VideoMarkView videoMark;
+    private MediaPlayer player;
+    private boolean videoPlaying;
+    private TextView btnPlay;
     private Bitmap cropBuf;          // 特写裁剪的复用缓冲，拖动时不重新分配
     private Canvas cropCanvas;
     private float lastTouchX;
@@ -82,11 +91,20 @@ public class MainActivity extends Activity {
         sizeInfo = findViewById(R.id.sizeInfo);
         btnPick = findViewById(R.id.btnPick);
         btnExport = findViewById(R.id.btnExport);
+        videoView = findViewById(R.id.videoView);
+        videoMark = findViewById(R.id.videoMark);
+        btnPlay = findViewById(R.id.btnPlay);
+        btnPlay.setOnClickListener(v -> toggleVideo());
+
         btnDetail = findViewById(R.id.btnDetail);
         btnDetail.setOnClickListener(v -> {
             detailMode = !detailMode;
             btnDetail.setSelected(detailMode);
             btnDetail.setText(detailMode ? "全图" : "特写");
+            if (videoPlaying) {
+                videoMark.setCloseUp(detailMode, closeUpPan);
+                syncVideoTransform();
+            }
             if (detailMode && lastComposed != null) {
                 updateCloseUp();
             } else {
@@ -106,6 +124,10 @@ public class MainActivity extends Activity {
                     lastTouchX = e.getX();
                     float span = Math.max(1f, v.getWidth() * 0.7f);
                     closeUpPan = Math.max(0f, Math.min(1f, closeUpPan - dx / span));
+                    if (videoPlaying) {
+                        videoMark.setCloseUp(detailMode, closeUpPan);
+                        syncVideoTransform();
+                    }
                     updateCloseUp();
                     return true;
                 }
@@ -213,6 +235,102 @@ public class MainActivity extends Activity {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    /* ── 实况照片的动态预览 ── */
+
+    private void toggleVideo() {
+        if (videoPlaying) {
+            stopVideo();
+            return;
+        }
+        if (meta == null || meta.trailerVideoLength <= 0 || srcUri == null) {
+            toast("这张照片没有动态部分");
+            return;
+        }
+        final Uri uri = srcUri;
+        final long skip = meta.eoiEnd + meta.trailerLeadLength;
+        final long len = meta.trailerVideoLength;
+        toast("正在准备动态部分…");
+        new Thread(() -> {
+            try {
+                File tmp = new File(getCacheDir(), "vl_preview.mp4");
+                InputStream in = getContentResolver().openInputStream(uri);
+                if (in == null) throw new RuntimeException("无法打开源文件");
+                try {
+                    VideoWatermark.extractRange(in, skip, len, tmp);
+                } finally {
+                    in.close();
+                }
+                runOnUiThread(() -> startPlayer(tmp));
+            } catch (Throwable t) {
+                runOnUiThread(() -> toast("读取动态部分失败：" + t.getMessage()));
+            }
+        }).start();
+    }
+
+    private void startPlayer(File f) {
+        try {
+            stopVideo();
+            videoView.setVisibility(View.VISIBLE);
+            videoMark.setVisibility(View.VISIBLE);
+            preview.setVisibility(View.GONE);
+            hint.setVisibility(View.GONE);
+            videoMark.setStyle(style);
+            videoMark.setCloseUp(detailMode, closeUpPan);
+
+            player = new MediaPlayer();
+            player.setDataSource(f.getAbsolutePath());
+            player.setLooping(true);
+            player.setOnPreparedListener(mp -> {
+                // SurfaceTexture 要等 View 真正挂上才有，这里再取
+                android.graphics.SurfaceTexture st = videoView.getSurfaceTexture();
+                if (st == null) {
+                    toast("视频预览初始化失败");
+                    stopVideo();
+                    return;
+                }
+                mp.setSurface(new Surface(st));
+                videoMark.setVideoSize(mp.getVideoWidth(), mp.getVideoHeight());
+                mp.start();
+                videoPlaying = true;
+                btnPlay.setText("停止");
+                btnPlay.setSelected(true);
+                syncVideoTransform();
+            });
+            player.setOnErrorListener((mp, what, extra) -> {
+                toast("播放失败（" + what + "/" + extra + "）");
+                stopVideo();
+                return true;
+            });
+            player.prepareAsync();
+        } catch (Throwable t) {
+            toast("播放失败：" + t.getMessage());
+            stopVideo();
+        }
+    }
+
+    /** 让 TextureView 的画面跟水印层用同一套缩放/平移 */
+    private void syncVideoTransform() {
+        if (videoView == null || videoMark == null) return;
+        android.graphics.Matrix m = new android.graphics.Matrix();
+        videoMark.applyTo(m, videoView.getWidth(), videoView.getHeight());
+        videoView.setTransform(m);
+    }
+
+    private void stopVideo() {
+        videoPlaying = false;
+        if (player != null) {
+            try { player.stop(); } catch (Throwable ignored) { }
+            try { player.release(); } catch (Throwable ignored) { }
+            player = null;
+        }
+        videoView.setVisibility(View.GONE);
+        videoMark.setVisibility(View.GONE);
+        preview.setVisibility(View.VISIBLE);
+        hint.setVisibility(View.VISIBLE);
+        btnPlay.setText("播放");
+        btnPlay.setSelected(false);
     }
 
     /* ── 自动更新 ── */
@@ -658,6 +776,9 @@ public class MainActivity extends Activity {
 
         boolean hasVideo = meta != null && meta.trailerVideoLength > 0;
         panel.videoOn = hasVideo;
+
+        // 有视频段才显示「播放」，否则点了也没意义
+        if (btnPlay != null) btnPlay.setVisibility(hasVideo ? View.VISIBLE : View.GONE);
 
         StringBuilder st = new StringBuilder();
         st.append(photoW).append(" × ").append(photoH);

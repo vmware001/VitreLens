@@ -122,6 +122,20 @@
                 android:scaleType="fitCenter"
                 android:contentDescription="预览" />
 
+            <!-- 实况照片的动态部分：点「播放」时显示，盖住静态预览 -->
+            <TextureView
+                android:id="@+id/videoView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
+
+            <!-- 视频上的水印覆盖层（Canvas 绘制，位置与导出时一致） -->
+            <com.vitrelens.app.VideoMarkView
+                android:id="@+id/videoMark"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:visibility="gone" />
+
             <TextView
                 android:id="@+id/hint"
                 android:layout_width="wrap_content"
@@ -130,6 +144,22 @@
                 android:text="选择一张照片开始"
                 android:textColor="#8AFFFFFF"
                 android:textSize="13sp" />
+
+            <!-- 播放实况照片的动态部分（仅当照片带视频时可用） -->
+            <TextView
+                android:id="@+id/btnPlay"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_gravity="top|start"
+                android:layout_margin="8dp"
+                android:text="播放"
+                android:textSize="11sp"
+                android:textColor="#E6FFFFFF"
+                android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:background="@drawable/bg_chip"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/btnDetail"
