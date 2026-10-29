@@ -1,10 +1,111 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用图标：一枚液态玻璃胶囊压在暗色照片上。
+  层次（由下往上）：深色径向底 → 投影 → 胶囊渐变 → 顶部高光 → 色散描边 → 内部文字条。
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#0A0C10" android:pathData="M0,0h108v108h-108z" />
-    <path android:fillColor="#BFEEFF"
-        android:pathData="M24,42 h60 a14,14 0 0 1 0,28 h-60 a14,14 0 0 1 0,-28 z" />
-    <path android:fillColor="#FFFFFF" android:fillAlpha="0.7"
-        android:pathData="M34,48 h26 a4,4 0 0 1 0,8 h-26 a4,4 0 0 1 0,-8 z" />
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 背景：中心略亮的径向渐变，比纯黑有层次 -->
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="44"
+                android:gradientRadius="78"
+                android:startColor="#1C2636"
+                android:centerColor="#0E1420"
+                android:endColor="#05070B" />
+        </aapt:attr>
+    </path>
+
+    <!-- 胶囊的柔和投影 -->
+    <path
+        android:fillColor="#000000"
+        android:fillAlpha="0.45"
+        android:pathData="M28,44 h52 a16,16 0 0 1 0,32 h-52 a16,16 0 0 1 0,-32 z" />
+
+    <!-- 玻璃本体：上亮下暗，模拟厚度 -->
+    <path android:pathData="M26,40 h56 a16,16 0 0 1 0,32 h-56 a16,16 0 0 1 0,-32 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="40"
+                android:endX="54"
+                android:endY="72"
+                android:startColor="#7AFFFFFF"
+                android:centerColor="#3DFFFFFF"
+                android:endColor="#1AFFFFFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- 顶部高光：贴着上缘的一条弧，玻璃的受光面 -->
+    <path android:pathData="M30,45 h48 a11,11 0 0 1 11,11 a12,12 0 0 0 -11,-7 h-48 a12,12 0 0 0 -11,7 a11,11 0 0 1 11,-11 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="26"
+                android:startY="44"
+                android:endX="26"
+                android:endY="56"
+                android:startColor="#B3FFFFFF"
+                android:endColor="#00FFFFFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- 左缘偏青、右缘偏红的色散描边 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#5CD8FF"
+        android:strokeWidth="1.4"
+        android:strokeAlpha="0.55"
+        android:pathData="M42,40 h-16 a16,16 0 0 0 -16,16 a16,16 0 0 0 16,16 h16" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF7A8A"
+        android:strokeWidth="1.4"
+        android:strokeAlpha="0.45"
+        android:pathData="M66,40 h16 a16,16 0 0 1 16,16 a16,16 0 0 1 -16,16 h-16" />
+
+    <!-- 内圈细边，让玻璃边界更利 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.9"
+        android:strokeAlpha="0.5"
+        android:pathData="M26,40 h56 a16,16 0 0 1 0,32 h-56 a16,16 0 0 1 0,-32 z" />
+
+    <!-- 文字条：机型名 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.95"
+        android:pathData="M35,49 h25 a2.6,2.6 0 0 1 0,5.2 h-25 a2.6,2.6 0 0 1 0,-5.2 z" />
+
+    <!-- 文字条：拍摄参数 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.55"
+        android:pathData="M35,58 h15 a1.8,1.8 0 0 1 0,3.6 h-15 a1.8,1.8 0 0 1 0,-3.6 z" />
+
+    <!-- 分隔竖线，呼应应用里的版式 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.75"
+        android:pathData="M67.2,50 h1.4 v8 h-1.4 z" />
+
+    <!-- 竖线右侧的小参数条 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.45"
+        android:pathData="M72,50.5 h9 a1.4,1.4 0 0 1 0,2.8 h-9 a1.4,1.4 0 0 1 0,-2.8 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.3"
+        android:pathData="M72,56.5 h6 a1.4,1.4 0 0 1 0,2.8 h-6 a1.4,1.4 0 0 1 0,-2.8 z" />
 </vector>

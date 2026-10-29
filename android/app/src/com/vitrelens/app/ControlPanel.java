@@ -136,8 +136,8 @@ class ControlPanel {
         slider(c3, "深度", 0, 100, 1, () -> st.depthPct, v -> st.depthPct = v, p -> Math.round(p) + "%");
         slider(c3, "厚度", 0, 100, 1, () -> st.thicknessPct, v -> st.thicknessPct = v, p -> Math.round(p) + "%");
         slider(c3, "粗糙度", 0, 100, 1, () -> st.roughPct, v -> st.roughPct = v, p -> Math.round(p) + "%");
-        // 色散也走对数曲线：滑块 0~100 → 实际 0~200。
-        // 低段（0~50）覆盖到约 126，前 1/4 就能精细控制轻微的彩边
+        // 色散走平方曲线：滑块 0~100 → 实际 0~200，滑到一半约 25%（50）
+        // 对数曲线半程就到 126，前段压不下来，微调轻微彩边时手感不对
         slider(c3, "色散", 0, 100, 0.5f,
                 () -> dispSlider(st.dispPct),
                 v -> st.dispPct = dispValue(v),
@@ -346,18 +346,21 @@ class ControlPanel {
     }
 
     private static final double DISP_MAX = 200.0;
-    private static final double DISP_K = 2.0;
 
-    /** 滑块位置 0~100 → 实际色散 0~200（对数曲线，低段更精细） */
+    /**
+     * 滑块位置 0~100 → 实际色散 0~200，走平方曲线。
+     * 要求「滑到一半约 25%」：t=0.5 → 200×0.25 = 50，正好是满量程的 25%。
+     * （对数曲线 t=0.5 会到 126，太陡，前段根本压不下来。）
+     */
     static float dispValue(float slider) {
         double t = Math.min(1.0, Math.max(0.0, slider / 100.0));
-        return (float) (DISP_MAX * Math.log(1 + DISP_K * t) / Math.log(1 + DISP_K));
+        return (float) (DISP_MAX * t * t);
     }
 
     /** dispValue 的反函数：把存储的色散值换算回滑块位置 */
     static float dispSlider(float value) {
         double v = Math.min(1.0, Math.max(0.0, value / DISP_MAX));
-        return (float) (100 * (Math.pow(1 + DISP_K, v) - 1) / DISP_K);
+        return (float) (100 * Math.sqrt(v));
     }
 
     static int logoPosIndex(String p) {

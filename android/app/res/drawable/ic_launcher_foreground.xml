@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标的前景层：一枚液态玻璃胶囊。
+  内容都落在中心 66×66 的安全区内（约 21~87），否则会被各家的圆形/方形遮罩切掉。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 胶囊的柔和投影 -->
+    <path
+        android:fillColor="#000000"
+        android:fillAlpha="0.5"
+        android:pathData="M29,46 h50 a15,15 0 0 1 0,30 h-50 a15,15 0 0 1 0,-30 z" />
+
+    <!-- 玻璃本体：上亮下暗，模拟厚度 -->
+    <path android:pathData="M27,43 h54 a15,15 0 0 1 0,30 h-54 a15,15 0 0 1 0,-30 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="43"
+                android:endX="54"
+                android:endY="73"
+                android:startColor="#8AFFFFFF"
+                android:centerColor="#44FFFFFF"
+                android:endColor="#1CFFFFFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- 顶部高光：贴着上缘的弧 -->
+    <path android:pathData="M31,47 h46 a10,10 0 0 1 10,10 a11,11 0 0 0 -10,-6.5 h-46 a11,11 0 0 0 -10,6.5 a10,10 0 0 1 10,-10 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="27"
+                android:startY="47"
+                android:endX="27"
+                android:endY="58"
+                android:startColor="#C4FFFFFF"
+                android:endColor="#00FFFFFF" />
+        </aapt:attr>
+    </path>
+
+    <!-- 左缘偏青、右缘偏红的色散描边 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#5CD8FF"
+        android:strokeWidth="1.5"
+        android:strokeAlpha="0.6"
+        android:pathData="M42,43 h-15 a15,15 0 0 0 -15,15 a15,15 0 0 0 15,15 h15" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF7A8A"
+        android:strokeWidth="1.5"
+        android:strokeAlpha="0.5"
+        android:pathData="M66,43 h15 a15,15 0 0 1 15,15 a15,15 0 0 1 -15,15 h-15" />
+
+    <!-- 内圈细边 -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.9"
+        android:strokeAlpha="0.55"
+        android:pathData="M27,43 h54 a15,15 0 0 1 0,30 h-54 a15,15 0 0 1 0,-30 z" />
+
+    <!-- 文字条：机型名 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.96"
+        android:pathData="M35,50.5 h23 a2.4,2.4 0 0 1 0,4.8 h-23 a2.4,2.4 0 0 1 0,-4.8 z" />
+
+    <!-- 文字条：拍摄参数 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.6"
+        android:pathData="M35,59 h14 a1.7,1.7 0 0 1 0,3.4 h-14 a1.7,1.7 0 0 1 0,-3.4 z" />
+
+    <!-- 分隔竖线 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.8"
+        android:pathData="M63.4,51 h1.3 v8.4 h-1.3 z" />
+
+    <!-- 竖线右侧的小参数条 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.5"
+        android:pathData="M68,51.5 h10 a1.3,1.3 0 0 1 0,2.6 h-10 a1.3,1.3 0 0 1 0,-2.6 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.32"
+        android:pathData="M68,57 h6.5 a1.3,1.3 0 0 1 0,2.6 h-6.5 a1.3,1.3 0 0 1 0,-2.6 z" />
+</vector>
