@@ -183,21 +183,132 @@ class GlassRenderer {
     }
 
     /** 两级模糊近似 three.js 的 mip 采样（roughness 决定取哪一级） */
-    private void makeBlur(Bitmap crop) {
-        blurBitmap = scaleInto(crop, 22, blurBitmap);
-        blurBitmap2 = scaleInto(crop, 72, blurBitmap2);
+    private void makeBlur(Bitmap crop, boolean hq) {
+        if (hq) {
+            // 导出：真正的可分离高斯。半径按画幅宽度取比例，
+            // 这样 4000px 的导出件和 1400px 的预览观感一致 ——
+            // 原来是固定的 22/72 像素，分辨率越高相对越清晰，预览与导出根本对不上。
+            float w = crop.getWidth();
+            blurBitmap = gaussianInto(crop, w / 63f, blurBitmap);
+            blurBitmap2 = gaussianInto(crop, w / 19f, blurBitmap2);
+        } else {
+            // 预览：极小图 + 双线性放大，够快，肉眼与高斯版本几乎一致
+            blurBitmap = scaleInto(crop, 22, blurBitmap);
+            blurBitmap2 = scaleInto(crop, 72, blurBitmap2);
+        }
     }
 
     private Bitmap scaleInto(Bitmap src, int div, Bitmap dst) {
         int w = Math.max(4, src.getWidth() / div);
         int h = Math.max(4, src.getHeight() / div);
         if (dst == null || dst.getWidth() != w || dst.getHeight() != h) {
+            if (dst != null) dst.recycle();
             dst = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         }
         android.graphics.Canvas c = new android.graphics.Canvas(dst);
         android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
         c.drawBitmap(src, null, new android.graphics.Rect(0, 0, w, h), p);
         return dst;
+    }
+
+    /**
+     * 高斯模糊：先逐级减半做预滤波（每级都是 2×2 区域平均，等价高斯金字塔的降采样），
+     * 再在低分辨率上做 3 次可分离盒式模糊（三次盒式已经很接近高斯）。
+     *
+     * <p>返回的位图分辨率低于原图。着色器按归一化 UV + LINEAR 采样，放大后是平滑的；
+     * 一次性缩到 1/22 再放大才会出现块状/偏软 —— 那是双线性采样直接跳采，不是模糊。
+     *
+     * @param sigmaFull 目标 sigma，单位是原图像素
+     */
+    private Bitmap gaussianInto(Bitmap src, float sigmaFull, Bitmap dst) {
+        Bitmap cur = src;
+        float sigma = Math.max(0.6f, sigmaFull);
+        // 降到 sigma 约 2.5 像素，剩下的交给盒式模糊（滑窗，O(1)/像素）
+        while (sigma > 2.5f && cur.getWidth() > 32 && cur.getHeight() > 32) {
+            int w = Math.max(16, cur.getWidth() / 2);
+            int h = Math.max(16, cur.getHeight() / 2);
+            Bitmap half = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            android.graphics.Canvas c = new android.graphics.Canvas(half);
+            c.drawBitmap(cur, null, new android.graphics.Rect(0, 0, w, h),
+                    new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG));
+            if (cur != src) cur.recycle();
+            cur = half;
+            sigma *= 0.5f;
+        }
+
+        Bitmap work = cur;
+        if (work == src) {
+            // 原图归调用方所有，不能就地改，复制一份
+            work = cur.copy(Bitmap.Config.ARGB_8888, true);
+        }
+        if (work == null) return dst;
+
+        int w = work.getWidth(), h = work.getHeight();
+        int[] px = new int[w * h];
+        work.getPixels(px, 0, w, 0, 0, w, h);
+        // 3 次盒式：宽度 w0 = 2r+1 时 sigma ≈ w0/2
+        int r = Math.max(1, Math.round(sigma - 0.5f));
+        boxBlur(px, w, h, r);
+        work.setPixels(px, 0, w, 0, 0, w, h);
+
+        if (dst != null && dst != work) dst.recycle();
+        return work;
+    }
+
+    /** 3 次可分离盒式模糊 ≈ 高斯 */
+    private static void boxBlur(int[] px, int w, int h, int r) {
+        int[] line = new int[Math.max(w, h)];
+        for (int pass = 0; pass < 3; pass++) {
+            blurH(px, line, w, h, r);
+            blurV(px, line, w, h, r);
+        }
+    }
+
+    private static void blurH(int[] px, int[] line, int w, int h, int r) {
+        final int div = 2 * r + 1;
+        for (int y = 0; y < h; y++) {
+            final int base = y * w;
+            int a = 0, cr = 0, cg = 0, cb = 0;
+            for (int i = -r; i <= r; i++) {
+                int c = px[base + clamp(i, w)];
+                a += c >>> 24; cr += (c >> 16) & 0xFF; cg += (c >> 8) & 0xFF; cb += c & 0xFF;
+            }
+            for (int x = 0; x < w; x++) {
+                line[x] = ((a / div) << 24) | ((cr / div) << 16) | ((cg / div) << 8) | (cb / div);
+                int out = px[base + clamp(x - r, w)];
+                int in = px[base + clamp(x + r + 1, w)];
+                a += (in >>> 24) - (out >>> 24);
+                cr += ((in >> 16) & 0xFF) - ((out >> 16) & 0xFF);
+                cg += ((in >> 8) & 0xFF) - ((out >> 8) & 0xFF);
+                cb += (in & 0xFF) - (out & 0xFF);
+            }
+            System.arraycopy(line, 0, px, base, w);
+        }
+    }
+
+    private static void blurV(int[] px, int[] line, int w, int h, int r) {
+        final int div = 2 * r + 1;
+        for (int x = 0; x < w; x++) {
+            int a = 0, cr = 0, cg = 0, cb = 0;
+            for (int i = -r; i <= r; i++) {
+                int c = px[clamp(i, h) * w + x];
+                a += c >>> 24; cr += (c >> 16) & 0xFF; cg += (c >> 8) & 0xFF; cb += c & 0xFF;
+            }
+            for (int y = 0; y < h; y++) {
+                line[y] = ((a / div) << 24) | ((cr / div) << 16) | ((cg / div) << 8) | (cb / div);
+                int out = px[clamp(y - r, h) * w + x];
+                int in = px[clamp(y + r + 1, h) * w + x];
+                a += (in >>> 24) - (out >>> 24);
+                cr += ((in >> 16) & 0xFF) - ((out >> 16) & 0xFF);
+                cg += ((in >> 8) & 0xFF) - ((out >> 8) & 0xFF);
+                cb += (in & 0xFF) - (out & 0xFF);
+            }
+            for (int y = 0; y < h; y++) px[y * w + x] = line[y];
+        }
+    }
+
+    private static int clamp(int v, int n) {
+        return v < 0 ? 0 : (v >= n ? n - 1 : v);
     }
 
     /**
@@ -211,6 +322,12 @@ class GlassRenderer {
      */
     Bitmap render(Bitmap crop, int cropX, int cropY, int fullW, int fullH,
                   WatermarkPainter.Panel p, WatermarkPainter.Style st) {
+        // 导出（大图）走真高斯；预览和视频帧用快路径
+        return render(crop, cropX, cropY, fullW, fullH, p, st, fullW >= 1600);
+    }
+
+    Bitmap render(Bitmap crop, int cropX, int cropY, int fullW, int fullH,
+                  WatermarkPainter.Panel p, WatermarkPainter.Style st, boolean hq) {
         int w = crop.getWidth();
         int h = crop.getHeight();
         if (!bind()) throw new RuntimeException("EGL makeCurrent 失败");
@@ -231,7 +348,7 @@ class GlassRenderer {
         GLES20.glViewport(0, 0, w, h);
 
         upload(texPhoto, crop);
-        makeBlur(crop);
+        makeBlur(crop, hq);
         upload(texBlur, blurBitmap);
         upload(texBlur2, blurBitmap2);
 

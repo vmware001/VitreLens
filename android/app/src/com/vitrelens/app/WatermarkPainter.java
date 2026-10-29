@@ -30,6 +30,8 @@ class WatermarkPainter {
         boolean showMeta = true;
 
         int brand = 2;                 // 0 无 1 徕卡 2 哈苏 3 哈苏H 4 蔡司 5 理光 6 苹果 7 自定义
+        /** 文字颜色跟随背景明暗自动切换（亮背景用深色字） */
+        boolean autoText = true;
         /** 水平位置：0 = 贴左，50 = 居中，100 = 贴右 */
         float posXPct = 50f;
         String align = "center";       // 已废弃，仅保留字段兼容旧预设
@@ -80,7 +82,7 @@ class WatermarkPainter {
             s.showSubtitle = showSubtitle; s.showBrand = showBrand;
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
-            s.posXPct = posXPct;
+            s.posXPct = posXPct; s.autoText = autoText;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
             s.logoRight = logoRight;
@@ -111,6 +113,8 @@ class WatermarkPainter {
         boolean paramsOn, metaOn, subOn;
         float logoX, logoY, logoW, logoH;
         boolean logoOn;
+        /** 背景偏亮时改用深色文字（autoText 打开时才生效） */
+        boolean darkText;
         /** logo 与参数之间的白色短竖线；sepX <= 0 表示不画 */
         float sepX, sepTop, sepBottom;
         boolean hasContent;
@@ -302,7 +306,10 @@ class WatermarkPainter {
             } else if ("frost".equals(st.nameMaterial)) {
                 drawFrostText(c, st.name, L.nameX, L.nameBaseline, L.nameSize, L.slant, u, st.font);
             } else {
-                p.setShadowLayer(Math.max(2f, u * 4.4f), 0, u * 1.0f, 0x66000000);
+                // 亮背景上用深色字，阴影反过来用浅色，否则深字压深影会糊成一团
+                p.setColor(textColor(L, 0xFF));
+                p.setShadowLayer(Math.max(2f, u * 4.4f), 0, u * 1.0f,
+                        L.darkText ? 0x40FFFFFF : 0x66000000);
                 c.save();
                 c.translate(L.nameX, L.nameBaseline);
                 if (L.slant != 0) c.skew(-L.slant, 0);
@@ -313,8 +320,9 @@ class WatermarkPainter {
 
         if (L.subOn) {
             Paint pSub = stylePaint(L.subSize, TRACK_SUB, st.font, false, st.subtitle);
-            pSub.setColor(0xCCFFFFFF);
-            pSub.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f, 0x66000000);
+            pSub.setColor(textColor(L, 0xCC));
+            pSub.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f,
+                    L.darkText ? 0x33FFFFFF : 0x66000000);
             c.save();
             float bx = L.subX + L.dotR;
             c.translate(bx, L.subBaseline - L.subSize * 0.34f);
@@ -325,7 +333,9 @@ class WatermarkPainter {
         }
 
         Paint pRight = stylePaint(L.metaSize, TRACK_META, "sans", false, st.params);
-        pRight.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f, 0x66000000);
+        pRight.setColor(textColor(L, 0xFF));
+        pRight.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f,
+                L.darkText ? 0x33FFFFFF : 0x66000000);
         if (L.paramsOn) {
             c.save();
             c.translate(L.paramsX, L.paramsBaseline);
@@ -335,7 +345,7 @@ class WatermarkPainter {
         }
         if (L.metaOn) {
             Paint pMeta2 = stylePaint(L.metaSize, TRACK_META, "sans", false, st.meta);
-            pMeta2.setColor(0xA6FFFFFF);
+            pMeta2.setColor(textColor(L, 0xA6));
             pMeta2.setShadowLayer(Math.max(1f, u * 3f), 0, u * 0.8f, 0x55000000);
             c.save();
             c.translate(L.metaX, L.metaBaseline);
@@ -344,12 +354,12 @@ class WatermarkPainter {
             c.restore();
         }
 
-        if (L.logoOn) drawLogo(c, st.brand, L.logoX, L.logoY, L.logoH, st.nameMaterial);
+        if (L.logoOn) drawLogo(c, st.brand, L.logoX, L.logoY, L.logoH, st.nameMaterial, L.darkText);
 
         // logo 与参数之间的分隔竖线
         if (L.sepX > 0) {
             Paint sep = new Paint(Paint.ANTI_ALIAS_FLAG);
-            sep.setColor("frost".equals(st.nameMaterial) ? 0x8AFFFFFF : 0xD2FFFFFF);
+            sep.setColor(textColor(L, "frost".equals(st.nameMaterial) ? 0x8A : 0xD2));
             sep.setStrokeWidth(Math.max(1.2f, u * 1.7f));
             sep.setStrokeCap(Paint.Cap.ROUND);
             c.drawLine(L.sepX, L.sepTop, L.sepX, L.sepBottom, sep);
@@ -599,6 +609,39 @@ class WatermarkPainter {
         return Math.abs(dr) + Math.abs(dg) + Math.abs(db) < 60;
     }
 
+    /**
+     * 量一下水印区域有多亮，用来决定文字用白还是深色。
+     * 只采样 panel 内部的一小片网格，够用且很快。
+     *
+     * @param bg 还没画水印的背景图
+     */
+    static float measureLum(Bitmap bg, Layout L) {
+        if (bg == null) return 0f;
+        int x0 = Math.max(0, (int) L.panel.x);
+        int y0 = Math.max(0, (int) L.panel.y);
+        int x1 = Math.min(bg.getWidth(), (int) (L.panel.x + L.panel.w));
+        int y1 = Math.min(bg.getHeight(), (int) (L.panel.y + L.panel.h));
+        if (x1 <= x0 || y1 <= y0) return 0f;
+        long sum = 0;
+        int n = 0;
+        for (int gy = 0; gy < 4; gy++) {
+            for (int gx = 0; gx < 8; gx++) {
+                int px = x0 + (x1 - x0) * (2 * gx + 1) / 16;
+                int py = y0 + (y1 - y0) * (2 * gy + 1) / 8;
+                int c = bg.getPixel(px, py);
+                // Rec.709 亮度
+                sum += (long) (0.2126 * ((c >> 16) & 0xFF) + 0.7152 * ((c >> 8) & 0xFF) + 0.0722 * (c & 0xFF));
+                n++;
+            }
+        }
+        return n == 0 ? 0f : (float) (sum / (double) n) / 255f;
+    }
+
+    /** 文字颜色：深色模式下用近黑，白色模式保持纯白，alpha 由调用方给 */
+    private static int textColor(Layout L, int alpha) {
+        return L.darkText ? ((alpha << 24) & 0xFF000000) : ((alpha << 24) | 0x00FFFFFF);
+    }
+
     /** 把图像下部 ratio 之后的内容清成透明（蔡司底部的弧线不属于字样） */
     private static Bitmap dropBottom(Bitmap src, float ratio) {
         int w = src.getWidth(), h = src.getHeight();
@@ -692,9 +735,32 @@ class WatermarkPainter {
      * 原图里的品牌色（徕卡红、蔡司蓝）直接贴到照片上会花，所以只取形状。
      */
     private static void drawLogoBitmap(Canvas c, Bitmap b, float x, float y,
-                                       float w, float hh, String material) {
+                                       float w, float hh, String material, boolean dark) {
         RectF dst = new RectF(x, y, x + w, y + hh);
         float u = Math.max(0.6f, hh / 26f);   // 相对图标高度的一个小单位
+
+        // 亮背景上图标也得跟着反色，否则白色字标直接消失
+        if (dark) {
+            if ("frost".equals(material)) {
+                Paint glow = tint(0x33FFFFFF);
+                for (float s = 1.10f; s > 1.001f; s -= 0.035f) {
+                    float dw = w * (s - 1) / 2f, dh = hh * (s - 1) / 2f;
+                    c.drawBitmap(b, null,
+                            new RectF(dst.left - dw, dst.top - dh, dst.right + dw, dst.bottom + dh), glow);
+                }
+                c.drawBitmap(b, null, dst, tint(0xC2151515));
+                return;
+            }
+            if ("liquid".equals(material)) {
+                c.drawBitmap(b, null, offset(dst, 0, u * 1.1f), tint(0x33101010));
+                c.drawBitmap(b, null, dst, tint(0xF2151515));
+                c.drawBitmap(b, null, offset(dst, 0, -u * 1.2f), tint(0x59FFFFFF));
+                return;
+            }
+            c.drawBitmap(b, null, offset(dst, 0, u * 0.9f), tint(0x40FFFFFF));
+            c.drawBitmap(b, null, dst, tint(0xFF1A1A1A));
+            return;
+        }
 
         if ("frost".equals(material)) {
             // 磨砂：半透明 + 用几层放大的低透明副本模拟柔光
@@ -721,13 +787,20 @@ class WatermarkPainter {
     }
 
     /** 蔡司标志的外框：比内容略大一圈的圆角矩形描边 */
-    private static void drawLogoFrame(Canvas c, float x, float y, float w, float hh, String material) {
+    private static void drawLogoFrame(Canvas c, float x, float y, float w, float hh,
+                                      String material, boolean dark) {
         float pad = hh * 0.24f;
         RectF r = new RectF(x - pad, y - pad, x + w + pad, y + hh + pad);
         float rad = Math.min(r.width(), r.height()) * 0.03f;
         float stroke = Math.max(0.8f, hh * 0.034f);
-        int color = "frost".equals(material) ? 0x9EFFFFFF
-                : ("liquid".equals(material) ? 0xE6FFFFFF : 0xFFFFFFFF);
+        int color;
+        if (dark) {
+            color = "frost".equals(material) ? 0xB3151515
+                    : ("liquid".equals(material) ? 0xD9151515 : 0xE61A1A1A);
+        } else {
+            color = "frost".equals(material) ? 0x9EFFFFFF
+                    : ("liquid".equals(material) ? 0xE6FFFFFF : 0xFFFFFFFF);
+        }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(stroke);
@@ -760,16 +833,17 @@ class WatermarkPainter {
         }
     }
 
-    private static void drawLogo(Canvas c, int brand, float x, float y, float h, String material) {
+    private static void drawLogo(Canvas c, int brand, float x, float y, float h,
+                                 String material, boolean dark) {
         Bitmap b = logoBitmap(brand);
         if (b != null) {
             float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
             float w = Math.min(logoMaxW(brand, h), h * asp);
             float hh = w / asp;
             float top = y + (h - hh) / 2f;
-            drawLogoBitmap(c, b, x, top, w, hh, material);
+            drawLogoBitmap(c, b, x, top, w, hh, material, dark);
             // 蔡司：只留 ZEISS 字样会丢掉标志性的方框，补一圈描边
-            if (brand == 4) drawLogoFrame(c, x, top, w, hh, material);
+            if (brand == 4) drawLogoFrame(c, x, top, w, hh, material, dark);
             return;
         }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);

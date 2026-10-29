@@ -81,6 +81,10 @@ class Composer {
             }
         }
 
+        // 画玻璃之前量背景亮度：玻璃本身会改变底色，先量才准
+        if (st.autoText) {
+            L.darkText = WatermarkPainter.measureLum(base, L) > 0.62f;
+        }
         WatermarkPainter.draw(c, L, st);
         return base;
     }

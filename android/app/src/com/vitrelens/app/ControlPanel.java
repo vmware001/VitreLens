@@ -130,35 +130,43 @@ class ControlPanel {
         label(c3, "我的预设");
         presetRow(c3);
 
-        slider(c3, "玻璃折射率", 1.00f, 2.00f, 0.01f, () -> st.ior, v -> st.ior = v,
-                p -> String.format(Locale.US, "%.2f", p));
-        slider(c3, "圆角 R", 0, 100, 1, () -> st.radiusPct, v -> st.radiusPct = v, p -> Math.round(p) + "%");
-        slider(c3, "深度", 0, 100, 1, () -> st.depthPct, v -> st.depthPct = v, p -> Math.round(p) + "%");
+        // 首屏只放最常动的四项 + 色调：模糊负责材质、厚度负责折射、高光/投影负责存在感。
+        // 其余光学参数收进「高级光学」，免得一屏全是滑块、默认效果反而没人看得懂。
+        slider(c3, "模糊度", 0, 100, 1, () -> st.roughPct, v -> st.roughPct = v, p -> Math.round(p) + "%");
         slider(c3, "厚度", 0, 100, 1, () -> st.thicknessPct, v -> st.thicknessPct = v, p -> Math.round(p) + "%");
-        slider(c3, "粗糙度", 0, 100, 1, () -> st.roughPct, v -> st.roughPct = v, p -> Math.round(p) + "%");
-        // 色散走平方曲线：滑块 0~100 → 实际 0~200，滑到一半约 25%（50）
-        // 对数曲线半程就到 126，前段压不下来，微调轻微彩边时手感不对
-        slider(c3, "色散", 0, 100, 0.5f,
-                () -> dispSlider(st.dispPct),
-                v -> st.dispPct = dispValue(v),
-                p -> Math.round(dispValue(p)) + "%");
-        slider(c3, "横向扭曲", 0, 200, 1, () -> st.warpPct, v -> st.warpPct = v, p -> Math.round(p) + "%");
-        slider(c3, "反射率", 0, 100, 1, () -> st.reflPct, v -> st.reflPct = v, p -> Math.round(p) + "%");
-        slider(c3, "透射率", 0, 100, 1, () -> st.transPct, v -> st.transPct = v, p -> Math.round(p) + "%");
         slider(c3, "高光", 0, 150, 1, () -> st.glossPct, v -> st.glossPct = v, p -> Math.round(p) + "%");
         slider(c3, "投影", 0, 100, 1, () -> st.shadowPct, v -> st.shadowPct = v, p -> Math.round(p) + "%");
-        // 加白走对数曲线：滑块位置 0~100 → 实际加白量由 whiteValue 换算
-        // 步长 0.5：对数曲线低段很陡，1% 一步会有 1~2% 的显示偏差
-        slider(c3, "加白", 0, 100, 0.5f,
-                () -> whiteSlider(st.whitePct),
-                v -> st.whitePct = whiteValue(v),
-                p -> Math.round(whiteValue(p)) + "%");
-        slider(c3, "细分", 8, 128, 4, () -> st.segments, v -> st.segments = Math.round(v),
-                p -> String.valueOf(Math.round(p)));
         chips(c3, new String[]{"色调"},
                 () -> new boolean[]{st.tintOn},
                 (i, on) -> st.tintOn = on);
-        hint(c3, "参数与 @specy/liquid-glass 一致：真实光线折射 + 厚度 + 粗糙度 + 菲涅尔反射。");
+        hint(c3, "想更像苹果：模糊度 20~30、厚度 30~40、反射率 30 上下，色散与扭曲保持接近 0。");
+
+        LinearLayout adv = fold(c3, "高级光学", false);
+        slider(adv, "玻璃折射率", 1.00f, 2.00f, 0.01f, () -> st.ior, v -> st.ior = v,
+                p -> String.format(Locale.US, "%.2f", p));
+        slider(adv, "圆角 R", 0, 100, 1, () -> st.radiusPct, v -> st.radiusPct = v, p -> Math.round(p) + "%");
+        slider(adv, "深度", 0, 100, 1, () -> st.depthPct, v -> st.depthPct = v, p -> Math.round(p) + "%");
+        // 色散走平方曲线：滑块 0~100 → 实际 0~200，滑到一半约 25%（50）
+        // 对数曲线半程就到 126，前段压不下来，微调轻微彩边时手感不对
+        slider(adv, "色散", 0, 100, 0.5f,
+                () -> dispSlider(st.dispPct),
+                v -> st.dispPct = dispValue(v),
+                p -> Math.round(dispValue(p)) + "%");
+        slider(adv, "反射率", 0, 100, 1, () -> st.reflPct, v -> st.reflPct = v, p -> Math.round(p) + "%");
+        slider(adv, "透射率", 0, 100, 1, () -> st.transPct, v -> st.transPct = v, p -> Math.round(p) + "%");
+        // 名字改成「艺术扭曲」：它跟像不像苹果是反的，越接近系统材质越应该保持 0
+        slider(adv, "艺术扭曲", 0, 200, 1, () -> st.warpPct, v -> st.warpPct = v, p -> Math.round(p) + "%");
+        // 加白走对数曲线：滑块位置 0~100 → 实际加白量由 whiteValue 换算
+        // 步长 0.5：对数曲线低段很陡，1% 一步会有 1~2% 的显示偏差
+        slider(adv, "加白", 0, 100, 0.5f,
+                () -> whiteSlider(st.whitePct),
+                v -> st.whitePct = whiteValue(v),
+                p -> Math.round(whiteValue(p)) + "%");
+        slider(adv, "细分", 8, 128, 4, () -> st.segments, v -> st.segments = Math.round(v),
+                p -> String.valueOf(Math.round(p)));
+        hint(adv, "折射率固定 1.45~1.50 就够，普通用户不必调；透射率是「混入环境色的比例」，"
+                + "调低会变成一块发白的色板，想加磨砂请调模糊度；艺术扭曲会主动把背景扭成玻璃砖，"
+                + "越接近系统材质越应该保持 0。");
 
         // ── 04 导出
         LinearLayout c4 = card(root, "04", "导出");
@@ -173,7 +181,7 @@ class ControlPanel {
                 () -> st.videoWidthScale, v -> st.videoWidthScale = v,
                 p -> Math.round(p) + "%");
         hint(c4, "实测 OPPO 实况照片的视频取景约为照片的 94%（贴着底边裁），"
-                + "所以视频里的水印默认上移 5%、宽度放大 6%。不满意可自己微调。");
+                + "所以视频里的水印默认上移 2%、宽度收到 95%。不满意可自己微调。");
 
         return refreshers;
     }
@@ -424,6 +432,31 @@ class ControlPanel {
         lp.bottomMargin = dp(14);
         root.addView(c, lp);
         return c;
+    }
+
+    /**
+     * 可折叠分组：返回内容容器，点标题行展开/收起。
+     * 首屏只放常用项，其余收进来 —— 一屏十几个滑块反而没人知道该动哪个。
+     */
+    private LinearLayout fold(LinearLayout parent, String title, boolean expanded) {
+        final TextView head = new TextView(act);
+        head.setText((expanded ? "\u25be  " : "\u25b8  ") + title);
+        head.setTextSize(11.5f);
+        head.setTextColor(0xCCFFFFFF);
+        head.setPadding(0, dp(14), 0, dp(6));
+        parent.addView(head, matchWrap());
+
+        final LinearLayout box = new LinearLayout(act);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        parent.addView(box, matchWrap());
+
+        head.setOnClickListener(v -> {
+            boolean show = box.getVisibility() != View.VISIBLE;
+            box.setVisibility(show ? View.VISIBLE : View.GONE);
+            head.setText((show ? "\u25be  " : "\u25b8  ") + title);
+        });
+        return box;
     }
 
     private void label(LinearLayout parent, String text) {
