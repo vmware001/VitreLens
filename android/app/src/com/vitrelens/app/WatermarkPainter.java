@@ -39,7 +39,9 @@ class WatermarkPainter {
         float widthPct = 92f;
         /** Logo 尺寸，100% = 跟随字号 */
         float logoSizePct = 100f;
-        /** Logo 位置：left 紧跟名称 / center 居中 / right 紧贴参数左侧（默认） */
+        /** Logo 水平位置：0 = 紧贴名称，100 = 紧贴参数（默认） */
+        float logoPosPct = 100f;
+        /** 已废弃，仅保留字段兼容 */
         String logoPos = "right";
         /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
         float glassHeightPct = 100f;
@@ -78,7 +80,7 @@ class WatermarkPainter {
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
             s.posXPct = posXPct;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
-            s.logoSizePct = logoSizePct; s.logoPos = logoPos;
+            s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
             s.nameSize = nameSize; s.metaSize = metaSize; s.italic = italic;
             s.ior = ior; s.radiusPct = radiusPct; s.depthPct = depthPct;
             s.thicknessPct = thicknessPct; s.roughPct = roughPct; s.dispPct = dispPct;
@@ -246,16 +248,10 @@ class WatermarkPainter {
                 float leftEnd = panelX + L.padX + leftW;
                 float rightStart = panelX + panelW - L.padX - rightW;
                 float space = rightStart - leftEnd;
-                float gx;
-                if ("left".equals(st.logoPos)) {
-                    gx = leftEnd + gapA;
-                } else if ("right".equals(st.logoPos) && rightW > 0) {
-                    // 默认：贴着参数列的左边，两者之间留一根竖线的位置
-                    gx = rightStart - gapB - logoW;
-                    if (gx < leftEnd + gapA * 0.5f) gx = leftEnd + gapA * 0.5f;
-                } else {
-                    gx = leftEnd + Math.max(gapA, (space - logoW) / 2f);
-                }
+                // 0 = 紧贴名称，100 = 紧贴参数；中间连续可调
+                float lfx = Math.max(0f, Math.min(100f, st.logoPosPct)) / 100f;
+                float span = rightStart - leftEnd - logoW;
+                float gx = (span > 0) ? (leftEnd + span * lfx) : (leftEnd + gapA * 0.5f);
                 L.logoX = gx;
                 L.logoY = cy - logoH / 2f;
 
@@ -475,15 +471,13 @@ class WatermarkPainter {
         for (int i = 0; i < 6 && i < bmps.length; i++) {
             Bitmap b = bmps[i];
             if (b != null && b.getWidth() > 1 && b.getHeight() > 0) {
-                Bitmap m = buildMask(b, i == 3);
+                Bitmap m = buildMask(b);
                 if (m != null) logoBmps[i] = m;
-                // 蔡司（索引 3）的标是「蓝底方块 + 白字 + 底部弧线」，抠掉底色后如果按内容裁边，
-                // 方块边界就没了，只剩一条宽扁的「字 + 弧线」，再套外框就像张笑脸。
-                // 保留原始方形画布，字与弧线的相对位置才是对的。
-                if (i != 3) {
-                    Bitmap t = trimAlpha(logoBmps[i]);
-                    if (t != null) logoBmps[i] = t;
-                }
+                // 蔡司（索引 3）：只要 ZEISS 字样，底部的弧线（官方标里代表镜片）在
+                // 小尺寸下会糊成一条粗白条，像张笑脸。裁掉它，再按内容裁边 + 手绘描边。
+                if (i == 3) logoBmps[i] = dropBottom(logoBmps[i], 0.62f);
+                Bitmap t = trimAlpha(logoBmps[i]);
+                if (t != null) logoBmps[i] = t;
                 logoAspect[i] = logoBmps[i].getWidth() / (float) logoBmps[i].getHeight();
             }
         }
@@ -581,6 +575,21 @@ class WatermarkPainter {
         int dg = ((a >> 8) & 0xFF) - ((b >> 8) & 0xFF);
         int db = (a & 0xFF) - (b & 0xFF);
         return Math.abs(dr) + Math.abs(dg) + Math.abs(db) < 60;
+    }
+
+    /** 把图像下部 ratio 之后的内容清成透明（蔡司底部的弧线不属于字样） */
+    private static Bitmap dropBottom(Bitmap src, float ratio) {
+        int w = src.getWidth(), h = src.getHeight();
+        int cut = Math.max(1, Math.min(h, Math.round(h * ratio)));
+        Bitmap out = src.copy(Bitmap.Config.ARGB_8888, true);
+        if (out == null) return src;
+        int[] row = new int[w];
+        for (int y = cut; y < h; y++) {
+            java.util.Arrays.fill(row, 0);
+            out.setPixels(row, 0, w, 0, y, w, 1);
+        }
+        if (out != src) src.recycle();
+        return out;
     }
 
     /** 裁掉四周全透明的空白：各品牌图标的留白比例差别很大，不裁的话大小完全不统一 */
@@ -691,10 +700,10 @@ class WatermarkPainter {
 
     /** 蔡司标志的外框：比内容略大一圈的圆角矩形描边 */
     private static void drawLogoFrame(Canvas c, float x, float y, float w, float hh, String material) {
-        float pad = hh * 0.10f;
+        float pad = hh * 0.24f;
         RectF r = new RectF(x - pad, y - pad, x + w + pad, y + hh + pad);
         float rad = Math.min(r.width(), r.height()) * 0.03f;
-        float stroke = Math.max(1f, hh * 0.055f);
+        float stroke = Math.max(0.8f, hh * 0.034f);
         int color = "frost".equals(material) ? 0x9EFFFFFF
                 : ("liquid".equals(material) ? 0xE6FFFFFF : 0xFFFFFFFF);
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -737,6 +746,8 @@ class WatermarkPainter {
             float hh = w / asp;
             float top = y + (h - hh) / 2f;
             drawLogoBitmap(c, b, x, top, w, hh, material);
+            // 蔡司：只留 ZEISS 字样会丢掉标志性的方框，补一圈描边
+            if (brand == 4) drawLogoFrame(c, x, top, w, hh, material);
             return;
         }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);

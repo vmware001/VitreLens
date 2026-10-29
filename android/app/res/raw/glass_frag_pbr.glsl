@@ -60,11 +60,13 @@ float sdRoundBox(vec2 p, vec2 b, float r) {
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
 }
 
-// 竖直剖面：边缘陡、到 depth 处切线水平（等价于挤出几何的倒角）
+// 竖直剖面：水滴状边缘 —— 从边缘平滑升到顶面，法线连续。
+// 原来用 sqrt(1-(1-t)^2)：这是四分之一圆，t=0 处导数为无穷，
+// 法线瞬间变成水平，深度一大就在边缘折出直角（看起来像被切了一刀）。
+// 改用 sin 弧：边缘斜率有限（≈1.57），中段最陡，到 depth 处切线水平。
 float profile(float d) {
     float t = clamp(d / max(u_depth, 0.5), 0.0, 1.0);
-    float k = 1.0 - t;
-    return sqrt(max(1.0 - k * k, 0.0));
+    return sin(t * 1.5707963);
 }
 
 float heightAt(vec2 q, vec2 half_, float r) {
@@ -138,7 +140,10 @@ void main() {
     // 用归一化坐标算一个柱面压缩量，上下边缘最强，中间基本不动。
     vec2 qn = q / max(half_, vec2(1.0));
     float cyl = -qn.x * (1.0 - abs(qn.y)) * 0.85 - qn.x * 0.25;
-    float warpPx = cyl * u_warp * u_thickness * 0.55;
+    // 上限取面板高度的一部分。不加限制时位移与厚度成正比，
+    // 厚度调大后能到几百像素，画面里的直线会被横向扯成直角。
+    float maxWarp = half_.y * 0.35;
+    float warpPx = clamp(cyl * u_warp * u_thickness * 0.55, -maxWarp, maxWarp);
     rayR.x += warpPx; rayG.x += warpPx; rayB.x += warpPx;
 
     // 越界限幅：位移以 crop 像素计，可用余量也换算成 crop 像素

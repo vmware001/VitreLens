@@ -47,7 +47,12 @@ class ControlPanel {
 
         label(c1, "相机品牌 Logo");
         segmentedWrap(c1, new String[]{"无", "徕卡", "哈苏", "哈苏H", "蔡司", "理光", "苹果", "自定义"},
-                v -> { st.brand = v; st.showBrand = v > 0; },
+                v -> {
+                    st.brand = v;
+                    st.showBrand = v > 0;
+                    st.logoSizePct = 100f;   // 各品牌合适的大小不同，换品牌就回默认
+                    refreshAll();
+                },
                 () -> st.brand);
         button(c1, "选择自定义图标…", () -> {
             if (act instanceof MainActivity) ((MainActivity) act).pickCustomLogo();
@@ -70,10 +75,14 @@ class ControlPanel {
 
         // ── 02 版式
         LinearLayout c2 = card(root, "02", "版式");
-        // 水平位置：0 = 贴左，100 = 贴右（比原来的三档自由）
-        slider(c2, "水平位置", 0, 100, 1, () -> st.posXPct, v -> st.posXPct = v,
-                p -> Math.round(p) + "%");
-        hint(c2, "水印越窄，左右可调范围越大（宽度 92% 时几乎没有余量）");
+        label(c2, "水印位置");
+        segmented(c2, new String[]{"左下", "居中", "右下"},
+                () -> alignIndex(st.align),
+                v -> {
+                    st.align = v == 0 ? "left" : (v == 2 ? "right" : "center");
+                    st.posXPct = v == 0 ? 0f : (v == 2 ? 100f : 50f);
+                },
+                () -> alignIndex(st.align));
 
         slider(c2, "水印宽度", 50, 100, 1, () -> st.widthPct, v -> st.widthPct = v, p -> (int) p + "%");
         slider(c2, "玻璃高度", 100, 300, 1, () -> st.glassHeightPct, v -> st.glassHeightPct = v,
@@ -85,11 +94,8 @@ class ControlPanel {
         slider(c2, "参数字号", 6, 20, 0.5f, () -> st.metaSize, v -> st.metaSize = v,
                 p -> String.format(Locale.US, "%.1f", p));
 
-        label(c2, "Logo 位置");
-        segmented(c2, new String[]{"名称右侧", "居中", "参数左侧"},
-                () -> logoPosIndex(st.logoPos),
-                v -> st.logoPos = new String[]{"left", "center", "right"}[v],
-                () -> logoPosIndex(st.logoPos));
+        slider(c2, "Logo 位置", 0, 100, 1, () -> st.logoPosPct, v -> st.logoPosPct = v,
+                p -> Math.round(p) == 0 ? "贴名称" : (Math.round(p) == 100 ? "贴参数" : Math.round(p) + "%"));
         slider(c2, "Logo 大小", 50, 200, 1, () -> st.logoSizePct, v -> st.logoSizePct = v,
                 p -> Math.round(p) + "%");
 
