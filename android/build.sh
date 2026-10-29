@@ -17,6 +17,11 @@ else
   mkdir -p "$TRASH"
   if [ -d build ]; then mv build "$TRASH/build.$(date +%s%N)" 2>/dev/null || true; fi
   mkdir -p build/gen build/classes build/dex
+  # .trash 每次构建会长一个 build 目录（约 6MB），太大时提醒一下（不自动删）
+  tsize=$(du -sm "$TRASH" 2>/dev/null | cut -f1)
+  if [ -n "$tsize" ] && [ "$tsize" -gt 300 ]; then
+    echo "  提示：.trash 已 ${tsize}MB，可以手动清空"
+  fi
 fi
 
 # ── 每次构建自动递增版本号；构建失败则回滚，避免白白吃掉一个版本号
