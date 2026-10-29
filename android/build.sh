@@ -65,6 +65,16 @@ mkdir -p build/test
   > build/test.log 2>&1 || { tail -30 build/test.log; echo "!! 单元测试失败"; exit 1; }
 tail -3 build/test.log
 
+echo "== 0.4/6 清理 res 里的同步软件临时文件 =="
+# 百度网盘等同步客户端会在 res/ 下生成 xxx.baiduyun.uploading.* 之类的临时文件，
+# aapt2 会把 res 目录里的所有文件当资源打包，APK 里就多出一堆垃圾。
+for f in app/res/*/*.baiduyun.* app/res/*/*.uploading.* app/res/*/*.tmp; do
+  [ -e "$f" ] || continue
+  mkdir -p "$(cd "$(dirname "$0")/.." && pwd)/.trash"
+  mv "$f" "$(cd "$(dirname "$0")/.." && pwd)/.trash/$(basename "$f").$(date +%s%N)" 2>/dev/null || true
+  echo "  移走临时文件 $(basename "$f")"
+done
+
 echo "== 0.5/6 同步本地品牌图标 =="
 mkdir -p app/res/drawable-nodpi
 for n in leica hasselblad hasselblad_h zeiss ricoh apple; do
