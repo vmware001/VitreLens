@@ -96,6 +96,11 @@ class ControlPanel {
 
         slider(c2, "Logo 位置", 0, 100, 1, () -> st.logoPosPct, v -> st.logoPosPct = v,
                 p -> Math.round(p) == 0 ? "贴名称" : (Math.round(p) == 100 ? "贴参数" : Math.round(p) + "%"));
+        label(c2, "Logo 相对参数");
+        segmented(c2, new String[]{"在左侧", "在右侧"},
+                () -> st.logoRight ? 1 : 0,
+                v -> st.logoRight = v == 1,
+                () -> st.logoRight ? 1 : 0);
         slider(c2, "Logo 大小", 50, 200, 1, () -> st.logoSizePct, v -> st.logoSizePct = v,
                 p -> Math.round(p) + "%");
 
@@ -119,7 +124,7 @@ class ControlPanel {
         LinearLayout c3 = card(root, "03", "液态玻璃");
         label(c3, "预设");
         segmented(c3, new String[]{"清透", "磨砂", "厚玻璃"},
-                () -> -1, v -> applyPreset(v), () -> -1);
+                () -> activeBuiltin, v -> applyPreset(v), () -> activeBuiltin);
         hint(c3, "预设会覆盖下面所有玻璃参数，可再单独微调");
 
         label(c3, "我的预设");
@@ -199,6 +204,8 @@ class ControlPanel {
         st.warpPct = v[11];
         st.segments = Math.round(v[12]);
         st.tintOn = true;
+        activeBuiltin = idx;
+        activePreset = -1;   // 切到内置预设，之前选中的自定义预设不再生效
         refreshAll();
         onChange.run();
     }
@@ -207,6 +214,8 @@ class ControlPanel {
 
     private static final String[] P_KEYS = {"p1", "p2", "p3"};
     private int activePreset = -1;
+    /** 当前选中的内置预设，-1 = 未选 */
+    private int activeBuiltin = -1;
 
     private void presetRow(LinearLayout parent) {
         final android.content.SharedPreferences sp =

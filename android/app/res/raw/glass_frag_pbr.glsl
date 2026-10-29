@@ -139,11 +139,16 @@ void main() {
     // 横向扭曲：隔着玻璃砖看东西时左右方向的错动。
     // 用归一化坐标算一个柱面压缩量，上下边缘最强，中间基本不动。
     vec2 qn = q / max(half_, vec2(1.0));
-    float cyl = -qn.x * (1.0 - abs(qn.y)) * 0.85 - qn.x * 0.25;
-    // 上限取面板高度的一部分。不加限制时位移与厚度成正比，
-    // 厚度调大后能到几百像素，画面里的直线会被横向扯成直角。
-    float maxWarp = half_.y * 0.35;
-    float warpPx = clamp(cyl * u_warp * u_thickness * 0.55, -maxWarp, maxWarp);
+    // 纵向权重原来是 1-|qn.y|：这是线性三角分布，在 qn.y=0（垂直中心）处导数从 -1
+    // 突跳到 +1，位移场自带一条折痕 —— 画面里的直线就被折成直角，厚度越大越明显。
+    // 换成抛物线 1-qn.y²：中心导数为 0，过渡平滑，接近水滴表面的弧形轮廓。
+    float vfall = 1.0 - qn.y * qn.y;
+    float cyl = -qn.x * vfall * 0.85 - qn.x * 0.25;
+    // 基准取「厚度」与「面板高度」中较小的那个：厚度是光线在玻璃里走过的路程，
+    // 直接乘进去会让位移超出面板尺寸，画面里的直线被横向扯断成直角。
+    float warpBase = min(u_thickness, half_.y * 0.7);
+    float maxWarp = half_.y * 0.30;
+    float warpPx = clamp(cyl * u_warp * warpBase * 0.35, -maxWarp, maxWarp);
     rayR.x += warpPx; rayG.x += warpPx; rayB.x += warpPx;
 
     // 越界限幅：位移以 crop 像素计，可用余量也换算成 crop 像素

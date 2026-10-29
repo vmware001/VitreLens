@@ -39,8 +39,10 @@ class WatermarkPainter {
         float widthPct = 92f;
         /** Logo 尺寸，100% = 跟随字号 */
         float logoSizePct = 100f;
-        /** Logo 水平位置：0 = 紧贴名称，100 = 紧贴参数（默认） */
+        /** Logo 水平位置：0 = 紧贴名称，100 = 紧贴参数（默认）；logoRight 时此值不生效 */
         float logoPosPct = 100f;
+        /** true = 把 logo 放到参数右侧 */
+        boolean logoRight = false;
         /** 已废弃，仅保留字段兼容 */
         String logoPos = "right";
         /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
@@ -55,7 +57,7 @@ class WatermarkPainter {
         float ior = 1.55f;
         float radiusPct = 100f;
         float depthPct = 36f;      // 边缘收边宽度 = 玻璃深度
-        float thicknessPct = 72f;  // 玻璃厚度
+        float thicknessPct = 72f;   // 玻璃厚度
         float roughPct = 8f;       // 粗糙度
         float dispPct = 80f;       // 色散
         float warpPct = 100f;      // 横向扭曲
@@ -81,6 +83,7 @@ class WatermarkPainter {
             s.posXPct = posXPct;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
+            s.logoRight = logoRight;
             s.nameSize = nameSize; s.metaSize = metaSize; s.italic = italic;
             s.ior = ior; s.radiusPct = radiusPct; s.depthPct = depthPct;
             s.thicknessPct = thicknessPct; s.roughPct = roughPct; s.dispPct = dispPct;
@@ -172,7 +175,9 @@ class WatermarkPainter {
             float gapB = logoW > 0 ? nameSize * 1.05f : 0;
             float rightW = Math.max(paramsW, metaW);
             float rightH = (paramsOn ? lineH : 0) + (paramsOn && metaOn ? lineGap : 0) + (metaOn ? lineH : 0);
-            float contentW = leftW + gapA + logoW + gapB + rightW;
+            float contentW = st.logoRight
+                    ? leftW + gapA + rightW + gapB + logoW
+                    : leftW + gapA + logoW + gapB + rightW;
 
             float margin = 38 * u;
             float panelW = Math.max(W * (st.widthPct / 100f), contentW + L.padX * 2);
@@ -230,17 +235,21 @@ class WatermarkPainter {
                 L.subX = panelX + L.padX;
             }
 
+            // 右侧块的右边界。logo 放在参数右边时，右对齐的应该是 logo，参数得左移
+            float rightEdge = panelX + panelW - L.padX;
+            if (st.logoRight && logoW > 0) rightEdge -= (logoW + gapB);
+
             if (paramsOn || metaOn) {
                 float rightTop = cy - rightH / 2f;
                 float y = rightTop;
                 if (paramsOn) {
                     L.paramsBaseline = y - fmM.ascent;
-                    L.paramsX = panelX + panelW - L.padX - paramsW;
+                    L.paramsX = rightEdge - paramsW;
                     y += lineH + lineGap;
                 }
                 if (metaOn) {
                     L.metaBaseline = y - fmM.ascent;
-                    L.metaX = panelX + panelW - L.padX - metaW;
+                    L.metaX = rightEdge - metaW;
                 }
             }
 
@@ -248,17 +257,25 @@ class WatermarkPainter {
                 float leftEnd = panelX + L.padX + leftW;
                 float rightStart = panelX + panelW - L.padX - rightW;
                 float space = rightStart - leftEnd;
-                // 0 = 紧贴名称，100 = 紧贴参数；中间连续可调
-                float lfx = Math.max(0f, Math.min(100f, st.logoPosPct)) / 100f;
-                float span = rightStart - leftEnd - logoW;
-                float gx = (span > 0) ? (leftEnd + span * lfx) : (leftEnd + gapA * 0.5f);
+                float gx;
+                if (st.logoRight) {
+                    // 贴住面板右内边界，参数已经让出 logoW + gapB 的宽度
+                    gx = rightEdge + gapB;
+                } else {
+                    // 0 = 紧贴名称，100 = 紧贴参数；中间连续可调
+                    float lfx = Math.max(0f, Math.min(100f, st.logoPosPct)) / 100f;
+                    float span = rightStart - leftEnd - logoW;
+                    gx = (span > 0) ? (leftEnd + span * lfx) : (leftEnd + gapA * 0.5f);
+                }
                 L.logoX = gx;
                 L.logoY = cy - logoH / 2f;
 
                 // 白色短竖线永远落在 logo 与参数的正中（不管 logo 摆在哪）
-                if (rightW > 0 && space > logoW) {
-                    // 放在 logo 与参数之间的正中，贴任何一侧都会显得挤
-                    L.sepX = (gx + logoW + rightStart) / 2f;
+                if (rightW > 0 && (st.logoRight || space > logoW)) {
+                    // 永远落在 logo 与参数之间的正中，贴任何一侧都会显得挤
+                    L.sepX = st.logoRight
+                            ? (rightEdge + gx) / 2f
+                            : (gx + logoW + rightStart) / 2f;
                     float half = Math.min(contentH, nameSize * 1.3f) * 0.5f;
                     L.sepTop = cy - half;
                     L.sepBottom = cy + half;
