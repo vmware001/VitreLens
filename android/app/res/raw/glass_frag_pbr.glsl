@@ -45,6 +45,7 @@ uniform float u_refl;
 uniform float u_trans;
 uniform float u_disp;
 uniform float u_warp;
+uniform float u_edge;        // 边缘最大采样深度（px），与斜面宽度的比值决定是否出现镜像
 uniform float u_segments;
 uniform vec3  u_tint;
 uniform float u_tintOn;
@@ -67,6 +68,16 @@ float sdRoundBox(vec2 p, vec2 b, float r) {
 float profile(float d) {
     float t = clamp(d / max(u_depth, 0.5), 0.0, 1.0);
     return sin(t * 1.5707963);
+}
+
+// 圆角矩形的 2D 外法线。直边处就是轴向，圆角处指向弧心外侧 ——
+// 边缘折射要靠它决定「往哪个方向折」，不能只用 q 的符号（圆角会错）。
+vec2 outwardDir(vec2 q, vec2 half_, float r) {
+    float rr = min(r, min(half_.x, half_.y));
+    vec2 b = max(half_ - vec2(rr), vec2(0.001));
+    vec2 dd = q - clamp(q, -b, b);
+    float l = length(dd);
+    return l > 1e-4 ? dd / l : vec2(0.0, 1.0);
 }
 
 float heightAt(vec2 q, vec2 half_, float r) {
@@ -151,6 +162,23 @@ void main() {
     float warpPx = clamp(cyl * u_warp * warpBase * 0.35, -maxWarp, maxWarp);
     rayR.x += warpPx; rayG.x += warpPx; rayB.x += warpPx;
 
+    // ── 边缘透镜 ──
+    // 苹果的液态玻璃在边缘有一圈明显的「背景被吸进去」的扭曲，靠的是
+    // 「斜面很窄 + 位移很大」：位移在斜面外沿最大，到斜面末端衰减到 0。
+    // 位移 / 斜面宽度 > 1 时，外沿那一圈会被折叠成镜像 —— 这正是参考实现里
+    // 提到的 mirroring 阈值。原来只有 transmissionRay 的位移（约 1.2 倍宽度），
+    // 太平缓，肉眼几乎看不出弯折。
+    float et = clamp(d / max(u_depth, 0.5), 0.0, 1.0);
+    // (1-t)²：末端导数为 0，与平面区无缝衔接，不会在斜面边界留一道折痕
+    float edgeFall = (1.0 - et) * (1.0 - et);
+    vec2 lensDir = -outwardDir(q, half_, u_radius);   // 指向面板内部
+    float lensAmt = u_edge * edgeFall;
+    // 边缘也带一点色散：红弯得少、蓝弯得多，和真实玻璃一致
+    float lensDisp = clamp(u_disp, 0.0, 2.0) * 0.12;
+    rayR.xy += lensDir * lensAmt * (1.0 - lensDisp);
+    rayG.xy += lensDir * lensAmt;
+    rayB.xy += lensDir * lensAmt * (1.0 + lensDisp);
+
     // 越界限幅：位移以 crop 像素计，可用余量也换算成 crop 像素
     vec2 photoUv = u_crop.xy + uv * u_crop.zw;
     float fullWpx = u_res.x / max(u_crop.z, 1e-4);
@@ -184,6 +212,12 @@ void main() {
     col = mix(col, env, F);
     // 高光倍率 1.1 → 0.7：原来白得发闪，塑料感很重
     col += vec3(1.0) * spec * u_gloss * (1.0 - clamp(u_rough, 0.0, 1.0) * 0.8) * 0.7;
+
+    // 斜面受光：斜面比顶面更容易吃到方向光，边缘那一圈会有柔和的亮度差。
+    // 纯位移在低对比背景（木桌、白墙）上看不出来，这层亮度差才让「边缘」看得出来是玻璃。
+    // 方向与高光一致（左上），底边自然偏暗。
+    float sheenDir = max(0.0, dot(normalize(N.xy + vec2(1e-5)), vec2(-0.45, -0.72)));
+    col += vec3(1.0) * sheenDir * smoothstep(0.0, 0.5, 1.0 - cosV) * 0.09;
 
     // 边缘细亮线
     float rim = 1.0 - smoothstep(0.0, max(2.4 * u_scale, 1.0), d);

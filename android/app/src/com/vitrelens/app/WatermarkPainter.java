@@ -62,6 +62,8 @@ class WatermarkPainter {
         float thicknessPct = 36f;   // 玻璃厚度
         float roughPct = 20f;       // 粗糙度
         float dispPct = 6f;       // 色散
+        /** 边缘折射强度：100% = 位移为斜面宽度的 2 倍（>100% 镜像感更强） */
+        float edgePct = 140f;
         float warpPct = 0f;      // 横向扭曲
         float reflPct = 28f;       // 反射率
         float transPct = 98f;     // 透射率
@@ -87,7 +89,7 @@ class WatermarkPainter {
             s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
             s.logoRight = logoRight;
             s.nameSize = nameSize; s.metaSize = metaSize; s.italic = italic;
-            s.ior = ior; s.radiusPct = radiusPct; s.depthPct = depthPct;
+            s.ior = ior; s.radiusPct = radiusPct; s.depthPct = depthPct; s.edgePct = edgePct;
             s.thicknessPct = thicknessPct; s.roughPct = roughPct; s.dispPct = dispPct;
             s.reflPct = reflPct; s.transPct = transPct; s.glossPct = glossPct; s.warpPct = warpPct;
             s.shadowPct = shadowPct; s.whitePct = whitePct;

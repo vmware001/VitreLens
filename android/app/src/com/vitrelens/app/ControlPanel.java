@@ -139,13 +139,18 @@ class ControlPanel {
         chips(c3, new String[]{"色调"},
                 () -> new boolean[]{st.tintOn},
                 (i, on) -> st.tintOn = on);
-        hint(c3, "想更像苹果：模糊度 20~30、厚度 30~40、反射率 30 上下，色散与扭曲保持接近 0。");
+        hint(c3, "想更像苹果：模糊度 20~30、厚度 30~40、反射率 30 上下，色散与扭曲保持接近 0；"
+                + "边缘折射是那圈「背景被吸进去」的来源，别关掉。");
 
         LinearLayout adv = fold(c3, "高级光学", false);
         slider(adv, "玻璃折射率", 1.00f, 2.00f, 0.01f, () -> st.ior, v -> st.ior = v,
                 p -> String.format(Locale.US, "%.2f", p));
         slider(adv, "圆角 R", 0, 100, 1, () -> st.radiusPct, v -> st.radiusPct = v, p -> Math.round(p) + "%");
         slider(adv, "深度", 0, 100, 1, () -> st.depthPct, v -> st.depthPct = v, p -> Math.round(p) + "%");
+        // 边缘折射：100% = 位移为斜面宽度的 2 倍。超过 100% 外沿会出现镜像，
+        // 这就是苹果玻璃边缘那圈「背景被吸进去」的来源
+        slider(adv, "边缘折射", 0, 200, 1, () -> st.edgePct, v -> st.edgePct = v,
+                p -> Math.round(p) + "%");
         // 色散走平方曲线：滑块 0~100 → 实际 0~200，滑到一半约 25%（50）
         // 对数曲线半程就到 126，前段压不下来，微调轻微彩边时手感不对
         slider(adv, "色散", 0, 100, 0.5f,
@@ -196,16 +201,16 @@ class ControlPanel {
 
     void applyPreset(int idx) {
         // 预设必须覆盖**全部**玻璃参数，否则选了预设某些滑块还停在旧值
-        // {ior, radius, depth, thickness, rough, disp, refl, trans, gloss, shadow, white, warp, segments}
+        // {ior, radius, depth, thickness, rough, disp, refl, trans, gloss, shadow, white, warp, segments, edge}
         float[][] p = {
                 // Apple 常规：模糊负责材质、厚度克制、反射与色散都收着
-                {1.46f, 100, 24, 36, 20, 6, 28, 98, 28, 18, 0, 0, 64},
-                // Apple 清透：基本清晰，略厚一点点
-                {1.46f, 100, 28, 44, 4, 8, 32, 100, 32, 14, 0, 0, 64},
+                {1.46f, 100, 24, 36, 20, 6, 28, 98, 28, 18, 0, 0, 64, 140},
+                // Apple 清透：基本清晰，边缘折射更明显（清透玻璃全靠边缘认出来）
+                {1.46f, 100, 28, 44, 4, 8, 32, 100, 32, 14, 0, 0, 64, 160},
                 // 磨砂：在常规基础上只加模糊，不叠加厚度/反射/色散
-                {1.40f, 100, 30, 44, 72, 6, 30, 96, 24, 20, 4, 0, 64},
-                // 厚玻璃：保留原来的强风格，作为个性化预设
-                {1.72f, 100, 72, 88, 8, 46, 100, 100, 82, 58, 0, 130, 96}
+                {1.40f, 100, 30, 44, 72, 6, 30, 96, 24, 20, 4, 0, 64, 110},
+                // 厚玻璃：保留原来的强风格，作为个性化预设（depth 已经很大，边缘折射收着）
+                {1.72f, 100, 72, 88, 8, 46, 100, 100, 82, 58, 0, 130, 96, 60}
         };
         float[] v = p[Math.max(0, Math.min(p.length - 1, idx))];
         st.ior = v[0];
@@ -221,6 +226,7 @@ class ControlPanel {
         st.whitePct = v[10];
         st.warpPct = v[11];
         st.segments = Math.round(v[12]);
+        st.edgePct = v[13];
         st.tintOn = true;
         activeBuiltin = idx;
         activePreset = -1;   // 切到内置预设，之前选中的自定义预设不再生效
