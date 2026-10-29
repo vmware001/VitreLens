@@ -30,8 +30,10 @@ class WatermarkPainter {
         boolean showMeta = true;
 
         int brand = 2;                 // 0 无 1 徕卡 2 哈苏 3 哈苏H 4 蔡司 5 理光 6 苹果 7 自定义
-        String align = "center";       // left / center / right
-        String font = "condensed";     // sans / condensed / serif / mono
+        /** 水平位置：0 = 贴左，50 = 居中，100 = 贴右 */
+        float posXPct = 50f;
+        String align = "center";       // 已废弃，仅保留字段兼容旧预设
+        String font = "sans";     // sans / condensed / serif / mono
         String nameMaterial = "solid"; // liquid / frost / solid
 
         float widthPct = 92f;
@@ -43,8 +45,8 @@ class WatermarkPainter {
         float glassHeightPct = 100f;
         /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
         float gapPct = 3.8f;
-        float nameSize = 28f;          // 每 1000px 画幅
-        float metaSize = 10f;
+        float nameSize = 24f;          // 每 1000px 画幅
+        float metaSize = 12.5f;
         boolean italic = true;
 
         // 玻璃（参数对齐 @specy/liquid-glass 的 GlassStyle）
@@ -74,6 +76,7 @@ class WatermarkPainter {
             s.showSubtitle = showSubtitle; s.showBrand = showBrand;
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
+            s.posXPct = posXPct;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.logoSizePct = logoSizePct; s.logoPos = logoPos;
             s.nameSize = nameSize; s.metaSize = metaSize; s.italic = italic;
@@ -159,11 +162,12 @@ class WatermarkPainter {
             float lineGap = metaSize * 0.62f;
 
             // 哈苏是 10:1 的横排字标，按普通字号算高度只有 0.1 倍，小到看不清
-            float logoH = nameSize * (st.brand == 2 ? 1.5f : 1.0f) * (st.logoSizePct / 100f);
+            float logoH = nameSize * (st.brand == 2 ? 1.2f : 1.0f) * (st.logoSizePct / 100f);
             float logoW = st.showBrand ? logoWidth(st.brand, logoH) : 0;
 
             float gapA = logoW > 0 ? nameSize * 0.55f : 0;
-            float gapB = logoW > 0 ? nameSize * 0.55f : 0;
+            // logo 与参数之间要留出竖线的呼吸空间，否则线会紧贴着两边
+            float gapB = logoW > 0 ? nameSize * 1.05f : 0;
             float rightW = Math.max(paramsW, metaW);
             float rightH = (paramsOn ? lineH : 0) + (paramsOn && metaOn ? lineGap : 0) + (metaOn ? lineH : 0);
             float contentW = leftW + gapA + logoW + gapB + rightW;
@@ -180,10 +184,11 @@ class WatermarkPainter {
 
             float contentH = Math.max(Math.max(leftH, rightH), logoW > 0 ? logoH : 0);
             float panelH = contentH * (st.glassHeightPct / 100f) + L.padY * 2;
-            float panelX;
-            if ("left".equals(st.align)) panelX = margin;
-            else if ("right".equals(st.align)) panelX = W - margin - panelW;
-            else panelX = (W - panelW) / 2f;
+            // 水平位置自由调节：0 = 贴左，100 = 贴右，50 = 居中
+            float minX = margin;
+            float maxX = Math.max(minX, W - margin - panelW);
+            float fx = Math.max(0f, Math.min(100f, st.posXPct)) / 100f;
+            float panelX = minX + (maxX - minX) * fx;
 
             float bottomGap = st.gapPct * W / 100f;
             float panelY = Math.max(0, H - bottomGap - panelH);
@@ -254,8 +259,8 @@ class WatermarkPainter {
                 L.logoX = gx;
                 L.logoY = cy - logoH / 2f;
 
-                // logo 与参数之间画一条白色短竖线（只有右侧布局、且两侧都有内容时才有意义）
-                if ("right".equals(st.logoPos) && rightW > 0 && space > logoW) {
+                // 白色短竖线永远落在 logo 与参数的正中（不管 logo 摆在哪）
+                if (rightW > 0 && space > logoW) {
                     // 放在 logo 与参数之间的正中，贴任何一侧都会显得挤
                     L.sepX = (gx + logoW + rightStart) / 2f;
                     float half = Math.min(contentH, nameSize * 1.3f) * 0.5f;
@@ -639,7 +644,7 @@ class WatermarkPainter {
      * 单独放宽到 7 倍，字标高度就能落在 1 倍字号附近。
      */
     private static float logoMaxW(int brand, float h) {
-        return h * (brand == 2 ? 7.0f : 2.2f);
+        return h * (brand == 2 ? 5.5f : 2.2f);
     }
 
     private static float logoWidth(int brand, float h) {

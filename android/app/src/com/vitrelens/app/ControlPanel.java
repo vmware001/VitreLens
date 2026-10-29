@@ -70,16 +70,15 @@ class ControlPanel {
 
         // ── 02 版式
         LinearLayout c2 = card(root, "02", "版式");
-        label(c2, "水印位置");
-        segmented(c2, new String[]{"左下", "居中", "右下"},
-                () -> alignIndex(st.align),
-                v -> st.align = v == 0 ? "left" : (v == 2 ? "right" : "center"),
-                () -> alignIndex(st.align));
+        // 水平位置：0 = 贴左，100 = 贴右（比原来的三档自由）
+        slider(c2, "水平位置", 0, 100, 1, () -> st.posXPct, v -> st.posXPct = v,
+                p -> Math.round(p) + "%");
+        hint(c2, "水印越窄，左右可调范围越大（宽度 92% 时几乎没有余量）");
 
         slider(c2, "水印宽度", 50, 100, 1, () -> st.widthPct, v -> st.widthPct = v, p -> (int) p + "%");
         slider(c2, "玻璃高度", 100, 300, 1, () -> st.glassHeightPct, v -> st.glassHeightPct = v,
                 p -> Math.round(p) + "%");
-        slider(c2, "距底高度", 0, 12, 0.1f, () -> st.gapPct, v -> st.gapPct = v,
+        slider(c2, "距底高度", 0, 50, 0.1f, () -> st.gapPct, v -> st.gapPct = v,
                 p -> String.format(Locale.US, "%.1f%%", p));
         slider(c2, "机型字号", 14, 48, 0.5f, () -> st.nameSize, v -> st.nameSize = v,
                 p -> String.format(Locale.US, "%.0f", p));
