@@ -136,7 +136,12 @@ class ControlPanel {
         slider(c3, "深度", 0, 100, 1, () -> st.depthPct, v -> st.depthPct = v, p -> Math.round(p) + "%");
         slider(c3, "厚度", 0, 100, 1, () -> st.thicknessPct, v -> st.thicknessPct = v, p -> Math.round(p) + "%");
         slider(c3, "粗糙度", 0, 100, 1, () -> st.roughPct, v -> st.roughPct = v, p -> Math.round(p) + "%");
-        slider(c3, "色散", 0, 200, 1, () -> st.dispPct, v -> st.dispPct = v, p -> Math.round(p) + "%");
+        // 色散也走对数曲线：滑块 0~100 → 实际 0~200。
+        // 低段（0~50）覆盖到约 126，前 1/4 就能精细控制轻微的彩边
+        slider(c3, "色散", 0, 100, 0.5f,
+                () -> dispSlider(st.dispPct),
+                v -> st.dispPct = dispValue(v),
+                p -> Math.round(dispValue(p)) + "%");
         slider(c3, "横向扭曲", 0, 200, 1, () -> st.warpPct, v -> st.warpPct = v, p -> Math.round(p) + "%");
         slider(c3, "反射率", 0, 100, 1, () -> st.reflPct, v -> st.reflPct = v, p -> Math.round(p) + "%");
         slider(c3, "透射率", 0, 100, 1, () -> st.transPct, v -> st.transPct = v, p -> Math.round(p) + "%");
@@ -338,6 +343,21 @@ class ControlPanel {
     static float whiteSlider(float value) {
         double v = Math.min(1.0, Math.max(0.0, value / 100.0));
         return (float) (100 * (Math.pow(1 + WHITE_K, v) - 1) / WHITE_K);
+    }
+
+    private static final double DISP_MAX = 200.0;
+    private static final double DISP_K = 2.0;
+
+    /** 滑块位置 0~100 → 实际色散 0~200（对数曲线，低段更精细） */
+    static float dispValue(float slider) {
+        double t = Math.min(1.0, Math.max(0.0, slider / 100.0));
+        return (float) (DISP_MAX * Math.log(1 + DISP_K * t) / Math.log(1 + DISP_K));
+    }
+
+    /** dispValue 的反函数：把存储的色散值换算回滑块位置 */
+    static float dispSlider(float value) {
+        double v = Math.min(1.0, Math.max(0.0, value / DISP_MAX));
+        return (float) (100 * (Math.pow(1 + DISP_K, v) - 1) / DISP_K);
     }
 
     static int logoPosIndex(String p) {

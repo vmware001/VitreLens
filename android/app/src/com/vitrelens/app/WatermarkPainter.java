@@ -59,7 +59,7 @@ class WatermarkPainter {
         float depthPct = 36f;      // 边缘收边宽度 = 玻璃深度
         float thicknessPct = 72f;   // 玻璃厚度
         float roughPct = 8f;       // 粗糙度
-        float dispPct = 80f;       // 色散
+        float dispPct = 40f;       // 色散
         float warpPct = 100f;      // 横向扭曲
         float reflPct = 90f;       // 反射率
         float transPct = 100f;     // 透射率
@@ -70,9 +70,9 @@ class WatermarkPainter {
         int segments = 64;         // 法线采样细分
 
         /** 视频水印高度微调（% 画幅宽度），正数=往上挪 */
-        float videoGapShift = 5f;
+        float videoGapShift = 2f;
         /** 视频水印宽度缩放（%），视频取景比照片窄，需要放大一点才和照片一致 */
-        float videoWidthScale = 106f;
+        float videoWidthScale = 95f;
 
         Style copy() {
             Style s = new Style();
@@ -133,7 +133,8 @@ class WatermarkPainter {
         L.slant = st.italic ? 0.115f : 0f;
 
         float scale = 1f;
-        for (int attempt = 0; attempt < 3; attempt++) {
+        // 最多收敛 6 次：水印变窄（比如视频用 95% 宽度）时，内容一次缩不够会溢出
+        for (int attempt = 0; attempt < 6; attempt++) {
             float nameSize = st.nameSize * u * scale;
             float metaSize = st.metaSize * u * scale;
             float subSize = nameSize * 0.42f;
@@ -184,8 +185,10 @@ class WatermarkPainter {
             panelW = Math.min(panelW, W - margin * 2);
             float availW = panelW - L.padX * 2;
 
-            if (contentW > availW + 0.5f && attempt < 2) {
-                scale *= Math.max(0.55f, availW / contentW) * 0.985f;
+            if (contentW > availW + 0.5f && attempt < 5) {
+                // 一次就按比例缩到位（再留 2% 余量），原来的 0.985 太保守，
+                // 两次根本缩不到目标宽度
+                scale *= Math.min(0.97f, availW / contentW * 0.98f);
                 continue;
             }
 
@@ -262,10 +265,12 @@ class WatermarkPainter {
                     // 贴住面板右内边界，参数已经让出 logoW + gapB 的宽度
                     gx = rightEdge + gapB;
                 } else {
-                    // 0 = 紧贴名称，100 = 紧贴参数；中间连续可调
+                    // 0 = 紧贴名称，100 = 紧贴参数；中间连续可调。
+                    // 两端各留 gapA / gapB，否则 logo 会直接压在参数上（竖线就夹在中间）
                     float lfx = Math.max(0f, Math.min(100f, st.logoPosPct)) / 100f;
-                    float span = rightStart - leftEnd - logoW;
-                    gx = (span > 0) ? (leftEnd + span * lfx) : (leftEnd + gapA * 0.5f);
+                    float from = leftEnd + gapA;
+                    float span = rightStart - gapB - from - logoW;
+                    gx = (span > 0) ? (from + span * lfx) : (from);
                 }
                 L.logoX = gx;
                 L.logoY = cy - logoH / 2f;
