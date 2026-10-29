@@ -46,6 +46,14 @@ final class YuvConverter {
     final boolean hdrSource;
 
     YuvConverter(int colorStandard, int colorTransfer, int colorRange) {
+        this(colorStandard, colorTransfer, colorRange, false);
+    }
+
+    /**
+     * @param keepHdrSignal true 时不做色调映射，直接输出 HLG / PQ 信号本身。
+     *        用于输出 HDR 视频：像素里存的就是 HLG 编码值，配合 HLG 标签交给播放器还原。
+     */
+    YuvConverter(int colorStandard, int colorTransfer, int colorRange, boolean keepHdrSignal) {
         boolean full = colorRange == RANGE_FULL;
         int std = colorStandard;
 
@@ -68,7 +76,9 @@ final class YuvConverter {
         }
 
         hdrSource = colorTransfer == XFER_HLG || colorTransfer == XFER_ST2084;
-        lut = hdrSource ? buildToneMapLut(colorTransfer) : null;
+        // lut == null 表示「YUV 转 RGB 之后原样输出」：SDR 源本来就是直通，
+        // HDR 源在 keepHdrSignal 时也走这条，从而保住 HDR 信号
+        lut = (hdrSource && !keepHdrSignal) ? buildToneMapLut(colorTransfer) : null;
 
         String stdName = std == STD_BT2020 ? "BT.2020"
                 : (std == STD_BT601_PAL || std == STD_BT601_NTSC) ? "BT.601" : "BT.709";

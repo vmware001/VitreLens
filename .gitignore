@@ -36,3 +36,6 @@ android/app/res/drawable-nodpi/logo_*.png
 
 # 删除的文件统一挪到这里（不用 rm -r，避免触发危险命令授权）
 .trash/
+
+# 改动前的手工备份
+.backup/

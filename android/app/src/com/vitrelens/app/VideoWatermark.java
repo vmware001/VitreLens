@@ -85,10 +85,18 @@ class VideoWatermark {
 
         // 源视频的真实色彩特性。之前一律按 BT.601 + SDR 处理，
         // 遇到 BT.2020/HLG 的源（OPPO 的动态照片就是）会整体偏色发灰，而且不会报错。
+        // HDR 输出：设备有 HEVC 编码器、且源本身是 HDR 时，就不再色调映射成 SDR，
+        // 直接把 HLG/PQ 信号送进编码器。位深取决于编码器（真机多为 Main10）。
+        final boolean hdrSource = isHdrTransfer(getInt(vf, MediaFormat.KEY_COLOR_TRANSFER, 0));
+        final boolean hdrOut = hdrSource && hdrEncodeSupported();
+        if (hdrSource && !hdrOut) {
+            Log.i(TAG, "源是 HDR，但本机没有 HEVC 编码器，只能回退 SDR");
+        }
         YuvConverter yuv = new YuvConverter(
                 getInt(vf, MediaFormat.KEY_COLOR_STANDARD, 0),
                 getInt(vf, MediaFormat.KEY_COLOR_TRANSFER, 0),
-                getInt(vf, MediaFormat.KEY_COLOR_RANGE, 0));
+                getInt(vf, MediaFormat.KEY_COLOR_RANGE, 0),
+                hdrOut);
 
         // edit list：媒体时间 0 之前可能还有一段预卷，真正的第 0 帧在 media_time 处。
         // 不跳过的话成片会多出这段内容，相对音频整体超前（实测 OPPO 是 100ms）。
@@ -148,18 +156,25 @@ class VideoWatermark {
         if (cb != null) cb.onProgress(0, totalFrames, "准备编码器");
 
         // ── 3. 编码器
-        MediaCodec enc = MediaCodec.createEncoderByType("video/avc");
-        MediaFormat ef = MediaFormat.createVideoFormat("video/avc", outW, outH);
+        final String encMime = hdrOut ? "video/hevc" : "video/avc";
+        MediaCodec enc = MediaCodec.createEncoderByType(encMime);
+        MediaFormat ef = MediaFormat.createVideoFormat(encMime, outW, outH);
         ef.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(outW, outH, fps));
         ef.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         ef.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        // 我们喂给编码器的是已经色调映射过的 SDR 内容，标签必须跟着走。
-        // 之前源是 HLG 却让编码器默认填 BT.709/SDR —— 内容与标签不符，播放器按标签解读就偏色。
+        // 标签必须和内容一致：HDR 直通时喂进去的是 HLG 信号，就得标 BT.2020/HLG，
+        // 否则播放器按 SDR 解读，高光被压平、颜色发灰。
         try {
-            ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
-            ef.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
-            ef.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+            if (hdrOut) {
+                ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020);
+                ef.setInteger("color-transfer", 7);   // HLG（常量在低版本 SDK 里没有）
+                ef.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+            } else {
+                ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
+                ef.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+                ef.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+            }
         } catch (Throwable ignored) {
         }
         enc.configure(ef, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
@@ -398,9 +413,11 @@ class VideoWatermark {
             mux.release();
         }
 
-        lastColorNote = yuv.hdrSource
-                ? "视频 " + yuv.label + " → 已色调映射为 SDR（BT.709）"
-                : "视频 " + yuv.label;
+        lastColorNote = !yuv.hdrSource
+                ? "视频 " + yuv.label
+                : (hdrOut
+                    ? "视频 " + yuv.label + " → 保留 HDR（HEVC / HLG）"
+                    : "视频 " + yuv.label + " → 已色调映射为 SDR（BT.709）");
         Log.i(TAG, "MP4 封装完成：" + out.length() + " 字节，" + lastColorNote);
         return out.length();
     }
@@ -489,6 +506,36 @@ class VideoWatermark {
 
     private static int align2(int v) {
         return (v & 1) == 0 ? v : v - 1;
+    }
+
+    private static boolean isHdrTransfer(int transfer) {
+        return transfer == 7 || transfer == 6;   // HLG / PQ
+    }
+
+    /** 有没有能吃 HLG 的 HEVC 编码器（Main / Main10 都可以承载 HLG） */
+    private static boolean hdrEncodeSupported() {
+        try {
+            MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+            for (MediaCodecInfo ci : list.getCodecInfos()) {
+                if (!ci.isEncoder()) continue;
+                for (String t : ci.getSupportedTypes()) {
+                    if (!"video/hevc".equalsIgnoreCase(t)) continue;
+                    MediaCodecInfo.CodecCapabilities caps = ci.getCapabilitiesForType(t);
+                    StringBuilder sb = new StringBuilder();
+                    for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
+                        sb.append(pl.profile).append('/').append(pl.level).append(' ');
+                        if (pl.profile == 1 || pl.profile == 2) {   // Main / Main10
+                            Log.i(TAG, "HDR 编码器：" + ci.getName() + " profiles=" + sb);
+                            return true;
+                        }
+                    }
+                    Log.i(TAG, "HEVC 编码器 " + ci.getName() + " 不支持 Main/Main10，profiles=" + sb);
+                }
+            }
+        } catch (Throwable t) {
+            Log.i(TAG, "探测 HEVC 编码器失败：" + t);
+        }
+        return false;
     }
 
     private static int getInt(MediaFormat f, String key, int def) {
