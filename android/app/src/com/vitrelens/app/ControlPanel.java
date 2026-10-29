@@ -8,6 +8,7 @@ import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.LayerDrawable;
@@ -184,15 +185,17 @@ class ControlPanel {
         slider(adv, "艺术扭曲", 0, 200, 1, () -> st.warpPct, v -> st.warpPct = v, p -> Math.round(p) + "%");
         // 加白走对数曲线：滑块位置 0~100 → 实际加白量由 whiteValue 换算
         // 步长 0.5：对数曲线低段很陡，1% 一步会有 1~2% 的显示偏差
-        slider(adv, "加白", 0, 100, 0.5f,
+        // 不透明度：把结果混向「实色」（浅色背景近白、深色背景近黑），
+        // 对应 macOS 液态玻璃的「色调」档；0 就是系统默认的透明档
+        slider(adv, "不透明度", 0, 100, 0.5f,
                 () -> whiteSlider(st.whitePct),
                 v -> st.whitePct = whiteValue(v),
                 p -> Math.round(whiteValue(p)) + "%");
         slider(adv, "细分", 8, 128, 4, () -> st.segments, v -> st.segments = Math.round(v),
                 p -> String.valueOf(Math.round(p)));
-        hint(adv, "折射率固定 1.45~1.50 就够，普通用户不必调；透射率是「混入环境色的比例」，"
-                + "调低会变成一块发白的色板，想加磨砂请调模糊度；艺术扭曲会主动把背景扭成玻璃砖，"
-                + "越接近系统材质越应该保持 0。");
+        hint(adv, "折射率固定 1.45~1.50 就够；透射率是「混入环境色的比例」，调低会变成一块发白的色板；"
+                + "不透明度是 macOS 那档「色调」玻璃，实色会跟着背景明暗在近白/近黑之间切换；"
+                + "艺术扭曲会主动把背景扭成玻璃砖，越接近系统材质越应该保持 0。");
 
         // ── 04 导出
         LinearLayout c4 = page(content);
@@ -236,12 +239,13 @@ class ControlPanel {
         // 预设必须覆盖**全部**玻璃参数，否则选了预设某些滑块还停在旧值
         // {ior, radius, depth, thickness, rough, disp, refl, trans, gloss, shadow, white, warp, segments, edge}
         float[][] p = {
-                // Apple 常规：模糊负责材质、厚度克制、反射与色散都收着
+                // Apple 常规：系统默认的「透明」档 —— 模糊负责材质、厚度克制、反射与色散都收着
                 {1.46f, 100, 24, 36, 20, 6, 28, 98, 28, 18, 0, 0, 64, 140},
-                // Apple 清透：基本清晰，边缘折射更明显（清透玻璃全靠边缘认出来）
+                // Apple 清透：基本清晰，全靠边缘折射认出来
                 {1.46f, 100, 28, 44, 4, 8, 32, 100, 32, 14, 0, 0, 64, 160},
-                // 磨砂：在常规基础上只加模糊，不叠加厚度/反射/色散
-                {1.40f, 100, 30, 44, 72, 6, 30, 96, 24, 20, 4, 0, 64, 110},
+                // 磨砂：对应 macOS 26 的「色调」档 —— 不透明度提高，实色随浅色/深色背景
+                // 在近白与近黑之间切换（trans 86 / white 30），再加上模糊
+                {1.40f, 100, 30, 44, 76, 6, 30, 86, 24, 20, 30, 0, 64, 110},
                 // 厚玻璃：保留原来的强风格，作为个性化预设（depth 已经很大，边缘折射收着）
                 {1.72f, 100, 72, 88, 8, 46, 100, 100, 82, 58, 0, 130, 96, 60}
         };
@@ -482,9 +486,32 @@ class ControlPanel {
     void showPage(int idx) {
         if (pages.isEmpty()) return;
         int i = Math.max(0, Math.min(pages.size() - 1, idx));
+        final int dir = i >= pageIndex ? 1 : -1;   // 往后翻就从右边进来
+        final boolean animate = i != pageIndex || pages.get(i).getVisibility() != View.VISIBLE;
         pageIndex = i;
         for (int k = 0; k < pages.size(); k++) {
-            pages.get(k).setVisibility(k == i ? View.VISIBLE : View.GONE);
+            LinearLayout pg = pages.get(k);
+            if (k == i) {
+                pg.setVisibility(View.VISIBLE);
+                if (animate) {
+                    // 新的一页从侧面滑进来并淡入，给切换一点方向感
+                    pg.animate().cancel();
+                    pg.setAlpha(0f);
+                    pg.setTranslationX(dir * dp(22));
+                    pg.animate().alpha(1f).translationX(0f)
+                            .setDuration(210)
+                            .setInterpolator(new DecelerateInterpolator(1.6f))
+                            .start();
+                } else {
+                    pg.setAlpha(1f);
+                    pg.setTranslationX(0f);
+                }
+            } else {
+                pg.animate().cancel();
+                pg.setAlpha(1f);
+                pg.setTranslationX(0f);
+                pg.setVisibility(View.GONE);
+            }
         }
         for (int k = 0; k < railButtons.size(); k++) {
             boolean on = k == i;

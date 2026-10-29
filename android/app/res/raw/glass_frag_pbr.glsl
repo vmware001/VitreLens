@@ -52,7 +52,8 @@ uniform float u_tintOn;
 
 uniform float u_scale;
 uniform float u_shadow;
-uniform float u_white;
+uniform float u_white;      // 不透明度：把结果混向 u_opaque（浅色主题近白、深色主题近黑）
+uniform vec3  u_opaque;     // 「更不透明」那一档的实色，由背景明暗决定
 uniform float u_gloss;
 
 float sdRoundBox(vec2 p, vec2 b, float r) {
@@ -224,7 +225,9 @@ void main() {
     // 边缘亮线 0.26 → 0.14：目标是边缘随法线柔和明暗，而不是完整一圈白边
     col += vec3(1.0) * rim * 0.14 * u_refl * clamp(-N.y + 0.75, 0.0, 1.0);
 
-    col = mix(col, vec3(1.0), clamp(u_white, 0.0, 1.0) * 0.85);
+    // macOS 26 的 Liquid Glass 有「透明」和「色调」两档，后者靠提高不透明度实现，
+    // 而那个实色会跟着浅色/深色外观走（浅色偏白、深色偏黑）。这里用背景明暗代替系统主题。
+    col = mix(col, u_opaque, clamp(u_white, 0.0, 1.0) * 0.92);
 
     gl_FragColor = vec4(mix(photo, col, mask), 1.0);
 }

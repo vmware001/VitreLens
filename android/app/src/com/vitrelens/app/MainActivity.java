@@ -10,6 +10,8 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.ImageDecoder;
 import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -17,7 +19,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Log;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.media.MediaPlayer;
 import android.view.Surface;
 import android.view.TextureView;
@@ -44,11 +48,22 @@ public class MainActivity extends Activity {
     private static final int PREVIEW_MAX = 1400;
 
     private ImageView preview, backdrop;
+    /** 整屏背景位图，界面上的液态玻璃面板要拿它取样 */
+    private Bitmap backdropBmp;
+    /** 屏幕尺寸的清晰背景（centerCrop 过），界面玻璃拿它取样：
+     *  背景本身已经模糊过，玻璃再糊一遍就没有细节可折射了，等于白做。 */
+    private Bitmap backdropSharp;
     private TextView hint, status, sizeInfo, btnPick, btnExport, btnDetail;
     private boolean detailMode;
     private float closeUpPan = 0.5f;
     private String versionName = "1.0";
     private boolean checkingUpdate;
+    // 拖动液态玻璃的形变（-1~1），由阻尼弹簧弹回 0；导出永远用 0
+    private float jellyX, jellyY, jellyVX, jellyVY, jellyTX, jellyTY;
+    private float jellyDownX, jellyDownY;
+    private boolean jellyActive, jellyRunning;
+    private long jellyLast;
+    private volatile boolean previewBusy;
     private Bitmap lastComposed;
     private TextureView videoView;
     private VideoMarkView videoMark;
@@ -140,6 +155,42 @@ public class MainActivity extends Activity {
         // 预览卡片也用同一套液态玻璃背景
         findViewById(R.id.stage).setBackground(
                 new GlassCardDrawable(getResources().getDisplayMetrics().density * 22f, 0x2BFFFFFF));
+
+        // 在预览上拖动：玻璃被「拉」出形变，松手弹回 —— 水印本身不会真的移动
+        findViewById(R.id.stage).setOnTouchListener((v, e) -> {
+            if (previewBase == null) return false;
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    jellyDownX = e.getX();
+                    jellyDownY = e.getY();
+                    jellyActive = true;
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    if (!jellyActive) return false;
+                    float scale = viewToImageScale();
+                    if (scale <= 0f) return false;
+                    float dx = (e.getX() - jellyDownX) / scale;
+                    float dy = (e.getY() - jellyDownY) / scale;
+                    // 归一化到「0.6 个水印宽度」：拖到这个距离就是满形变
+                    float denom = Math.max(1f,
+                            previewBase.getWidth() * (style.widthPct / 100f) * 0.6f);
+                    jellyTX = Math.max(-1f, Math.min(1f, dx / denom));
+                    jellyTY = Math.max(-1f, Math.min(1f, dy / denom));
+                    startJelly();
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (!jellyActive) return false;
+                    jellyActive = false;
+                    jellyTX = 0f;
+                    jellyTY = 0f;
+                    startJelly();
+                    return true;
+                default:
+                    return false;
+            }
+        });
         btnExport.setEnabled(false);
 
         try {
@@ -637,7 +688,10 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     hint.setVisibility(View.GONE);
                     btnExport.setEnabled(true);
+                    backdropBmp = bg;
+                    backdropSharp = makeSharpBackdrop(bmp);
                     backdrop.setImageBitmap(bg);
+                    applyUiGlass();
                     fillFromMeta();
                     pd.dismiss();
                     schedulePreview();
@@ -855,6 +909,175 @@ public class MainActivity extends Activity {
 
     /* ── 预览 ── */
 
+    /**
+     * 把界面上的玻璃面板换成「真」液态玻璃：取背景图对应区域的像素，
+     * 走和导出完全相同的那套着色器渲染，再作为背景贴回去。
+     *
+     * <p>背景是静态位图，所以每个面板只需要算一次（换照片时重算）。
+     * 界面上的文字/控件画在这层之上，所以看到的是「背景被玻璃折射」的效果。
+     */
+    /** 屏幕尺寸的清晰背景：centerCrop 到整屏，给界面玻璃取样 */
+    private Bitmap makeSharpBackdrop(Bitmap src) {
+        int vw = Math.max(1, backdrop.getWidth());
+        int vh = Math.max(1, backdrop.getHeight());
+        float s = Math.max(vw / (float) src.getWidth(), vh / (float) src.getHeight());
+        int w = Math.max(vw, Math.round(src.getWidth() * s));
+        int h = Math.max(vh, Math.round(src.getHeight() * s));
+        Bitmap scaled = Bitmap.createScaledBitmap(src, w, h, true);
+        Bitmap out = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        c.drawBitmap(scaled, (vw - w) / 2f, (vh - h) / 2f, null);
+        if (scaled != out) scaled.recycle();
+        return out;
+    }
+
+    private void applyUiGlass() {
+        if (glass == null || backdropBmp == null) return;
+        // 左栏真正显示的是 rail 里的那颗胶囊，玻璃要贴在它上面
+        View railBox = findViewById(R.id.rail);
+        View pill = (railBox instanceof ViewGroup && ((ViewGroup) railBox).getChildCount() > 0)
+                ? ((ViewGroup) railBox).getChildAt(0) : railBox;
+        renderGlassBg(pill, 22f);
+        renderGlassBg(findViewById(R.id.scroll), 22f);
+    }
+
+    private void renderGlassBg(final View v, final float radiusDp) {
+        if (glass == null || backdropBmp == null || backdropBmp.isRecycled()) return;
+        if (v == null || v.getWidth() < 8 || v.getHeight() < 8) {
+            Log.w("VitreLens", "UI 玻璃跳过：视图尺寸为 0");
+            return;
+        }
+
+        final int vw = v.getWidth(), vh = v.getHeight();
+        int[] bLoc = new int[2], vLoc = new int[2];
+        backdrop.getLocationInWindow(bLoc);
+        v.getLocationInWindow(vLoc);
+        float vx = vLoc[0] - bLoc[0];
+        float vy = vLoc[1] - bLoc[1];
+
+        // 清晰背景已经是屏幕尺寸，视图坐标就是位图坐标
+        Bitmap srcBmp = (backdropSharp != null && !backdropSharp.isRecycled())
+                ? backdropSharp : backdropBmp;
+        int bx = Math.max(0, Math.round(vx));
+        int by = Math.max(0, Math.round(vy));
+        int bw = Math.min(vw, srcBmp.getWidth() - bx);
+        int bh = Math.min(vh, srcBmp.getHeight() - by);
+        if (bw < 8 || bh < 8) return;
+
+        Bitmap base;
+        try {
+            Bitmap crop = Bitmap.createBitmap(srcBmp, bx, by, bw, bh);
+            base = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
+            Canvas bc = new Canvas(base);
+            bc.drawBitmap(crop, null, new Rect(0, 0, vw, vh), new Paint(Paint.FILTER_BITMAP_FLAG));
+            crop.recycle();
+        } catch (Throwable t) {
+            return;
+        }
+        // 和背景那层压暗对齐（#B307080B 是全黑度，玻璃自己要更亮一点才像浮在上面）
+        new Canvas(base).drawColor(0xA607080B);
+
+        final WatermarkPainter.Style ust = uiGlassStyle();
+        final float radiusPx = radiusDp * getResources().getDisplayMetrics().density;
+
+        glQueue.execute(() -> {
+            Bitmap out = null;
+            try {
+                WatermarkPainter.Panel p = new WatermarkPainter.Panel();
+                p.x = 0;
+                p.y = 0;
+                p.w = vw;
+                p.h = vh;
+                p.r = radiusPx;
+                p.bevel = vh * 0.5f * (ust.depthPct / 100f);
+                p.edgeW = p.bevel;
+                out = glass.render(base, 0, 0, vw, vh, p, ust, true);
+            } catch (Throwable t) {
+                Log.w("VitreLens", "UI 玻璃渲染失败", t);
+            }
+            final Bitmap res = out;
+            ui.post(() -> {
+                if (res == null) return;
+                android.graphics.drawable.BitmapDrawable d =
+                        new android.graphics.drawable.BitmapDrawable(getResources(), res);
+                v.setBackground(d);
+            });
+        });
+    }
+
+    /** 界面玻璃用的参数：磨砂、低反射、折射克制 —— 和导出用的预设是同一套字段 */
+    private WatermarkPainter.Style uiGlassStyle() {
+        WatermarkPainter.Style s = new WatermarkPainter.Style();
+        s.ior = 1.46f;
+        s.radiusPct = 100f;
+        s.depthPct = 18f;
+        s.thicknessPct = 14f;
+        s.roughPct = 52f;
+        s.dispPct = 5f;
+        s.reflPct = 22f;
+        s.transPct = 97f;
+        s.glossPct = 24f;
+        s.shadowPct = 0f;
+        s.whitePct = 0f;
+        s.warpPct = 0f;
+        s.edgePct = 120f;
+        s.segments = 64;
+        s.tintOn = true;
+        return s;
+    }
+
+    /** 预览上显示的位图相对视图的缩放比（fitCenter），用来把手指位移换算成图像像素 */
+    private float viewToImageScale() {
+        Bitmap b = detailMode ? cropBuf : lastComposed;
+        if (b == null || b.isRecycled()) return 0f;
+        int vw = preview.getWidth(), vh = preview.getHeight();
+        if (vw == 0 || vh == 0) return 0f;
+        return Math.min(vw / (float) b.getWidth(), vh / (float) b.getHeight());
+    }
+
+    private void startJelly() {
+        if (jellyRunning) return;
+        jellyRunning = true;
+        jellyLast = 0;
+        ui.post(jellyTick);
+    }
+
+    /** 阻尼弹簧：k 决定回弹快慢，c 决定过冲多少（偏小一点才有「果冻」的余韵） */
+    private final Runnable jellyTick = this::jellyFrame;
+
+    private void jellyFrame() {
+        long now = System.nanoTime();
+        float dt = jellyLast == 0 ? 0.016f : Math.min(0.032f, (now - jellyLast) / 1e9f);
+        jellyLast = now;
+        final float k = 620f, c = 24f;
+        jellyVX += ((jellyTX - jellyX) * k - jellyVX * c) * dt;
+        jellyVY += ((jellyTY - jellyY) * k - jellyVY * c) * dt;
+        jellyX += jellyVX * dt;
+        jellyY += jellyVY * dt;
+
+        boolean settled = !jellyActive
+                && Math.abs(jellyTX - jellyX) < 0.004f && Math.abs(jellyVX) < 0.02f
+                && Math.abs(jellyTY - jellyY) < 0.004f && Math.abs(jellyVY) < 0.02f;
+        if (settled) {
+            jellyX = jellyTX;
+            jellyY = jellyTY;
+            jellyVX = jellyVY = 0f;
+            jellyRunning = false;
+            jellyLast = 0;
+            runPreviewNow();
+            return;
+        }
+        runPreviewNow();
+        ui.postDelayed(jellyTick, 16);
+    }
+
+    /** 拖动时每帧都要重画，不能等 schedulePreview 的 70ms 防抖 */
+    private void runPreviewNow() {
+        if (previewBusy) return;
+        ui.removeCallbacks(previewTask);
+        ui.post(previewTask);
+    }
+
     private void schedulePreview() {
         if (previewBase == null) return;
         ui.removeCallbacks(previewTask);
@@ -867,31 +1090,39 @@ public class MainActivity extends Activity {
         if (previewBase == null) return;
         final WatermarkPainter.Style st = style.copy();
         final int seq = ++previewSeq;
+        final float jx = jellyX, jy = jellyY;
+        previewBusy = true;
         glQueue.execute(() -> {
+            Bitmap out = null;
             try {
                 Bitmap base = previewBase;
-                if (base == null) return;
-                Bitmap work = base.copy(Bitmap.Config.ARGB_8888, true);
-                if (work == null) return;
-                final Bitmap out = composer.composeOn(work, work.getWidth(), work.getHeight(), st);
-                ui.post(() -> {
-                    // 过期的帧没人会显示，必须回收，否则每次拖动滑块都漏一张整图
-                    if (seq != previewSeq) {
-                        recycleQuietly(out);
-                        return;
+                if (base != null) {
+                    Bitmap work = base.copy(Bitmap.Config.ARGB_8888, true);
+                    if (work != null) {
+                        out = composer.composeOn(work, work.getWidth(), work.getHeight(), st, jx, jy);
                     }
-                    Bitmap prev = lastComposed;
-                    lastComposed = out;
-                    if (detailMode) {
-                        updateCloseUp();
-                    } else {
-                        preview.setImageBitmap(out);
-                    }
-                    // setImageBitmap 之后 ImageView 已经不再引用上一张，可以安全回收
-                    if (prev != null && prev != out) recycleQuietly(prev);
-                });
+                }
             } catch (Throwable ignored) {
             }
+            final Bitmap result = out;
+            ui.post(() -> {
+                previewBusy = false;
+                if (result == null) return;
+                // 过期的帧没人会显示，必须回收，否则每次拖动滑块都漏一张整图
+                if (seq != previewSeq) {
+                    recycleQuietly(result);
+                    return;
+                }
+                Bitmap prev = lastComposed;
+                lastComposed = result;
+                if (detailMode) {
+                    updateCloseUp();
+                } else {
+                    preview.setImageBitmap(result);
+                }
+                // setImageBitmap 之后 ImageView 已经不再引用上一张，可以安全回收
+                if (prev != null && prev != result) recycleQuietly(prev);
+            });
         });
     }
 

@@ -32,6 +32,8 @@ class WatermarkPainter {
         int brand = 2;                 // 0 无 1 徕卡 2 哈苏 3 哈苏H 4 蔡司 5 理光 6 苹果 7 自定义
         /** 文字颜色跟随背景明暗自动切换（亮背景用深色字） */
         boolean autoText = true;
+        /** 背景偏暗：不透明档的实色跟着走（浅色主题近白、深色主题近黑） */
+        boolean themeDark;
         /** 水平位置：0 = 贴左，50 = 居中，100 = 贴右 */
         float posXPct = 50f;
         String align = "center";       // 已废弃，仅保留字段兼容旧预设
@@ -84,7 +86,7 @@ class WatermarkPainter {
             s.showSubtitle = showSubtitle; s.showBrand = showBrand;
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
-            s.posXPct = posXPct; s.autoText = autoText;
+            s.posXPct = posXPct; s.autoText = autoText; s.themeDark = themeDark;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
             s.logoRight = logoRight;
@@ -127,6 +129,14 @@ class WatermarkPainter {
     private static final float TRACK_SUB = 0.02f;
 
     static Layout layout(int W, int H, Style st) {
+        return layout(W, H, st, 0f, 0f);
+    }
+
+    /**
+     * @param jsx 水平形变，-1~1（负=往左拉）。只用于预览的拖动手势，导出恒为 0。
+     * @param jsy 垂直形变，-1~1
+     */
+    static Layout layout(int W, int H, Style st, float jsx, float jsy) {
         Layout L = new Layout();
         if (st.name == null) st.name = "";
         if (st.subtitle == null) st.subtitle = "";
@@ -208,6 +218,25 @@ class WatermarkPainter {
 
             float bottomGap = st.gapPct * W / 100f;
             float panelY = Math.max(0, H - bottomGap - panelH);
+
+            // 拖动手感：以面板中心为基准做挤压/拉伸，并让中心跟着手指走一部分，
+            // 看着像一块被手指捏住拉长的果冻；松手后由 spring 弹回。
+            if (jsx != 0f || jsy != 0f) {
+                float baseW = panelW, baseH = panelH;
+                float cx = panelX + baseW / 2f;
+                float cy = panelY + baseH / 2f;
+                // 以中心为基准做「挤压/拉伸」：往右拉变宽变矮，往左拉变窄变高。
+                // 水印本来就占 92% 宽，整块平移会把两侧文字直接推出画幅，
+                // 所以位移只给到剩余空隙那么多（几乎为 0），形变才是主体。
+                panelW = baseW * (1f + jsx * 0.14f);
+                panelH = baseH * Math.max(0.85f, 1f + jsy * 0.20f - Math.abs(jsx) * 0.16f);
+                float slack = Math.max(0f, (W - panelW) / 2f) * 0.8f;
+                float push = Math.max(-slack, Math.min(slack, jsx * baseW * 0.12f));
+                cx += push;
+                cy += jsy * baseH * 0.22f;
+                panelX = cx - panelW / 2f;
+                panelY = cy - panelH / 2f;
+            }
 
             L.panel.x = panelX;
             L.panel.y = panelY;

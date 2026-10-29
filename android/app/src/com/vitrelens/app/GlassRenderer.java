@@ -28,6 +28,7 @@ class GlassRenderer {
     private int program;
     private int uPhoto, uBlur, uBlur2, uRes, uPanel, uRadius, uWhite, uCrop;
     private int uIor, uDepth, uThickness, uRough, uDisp, uWarp, uEdge, uRefl, uTrans, uSegments;
+    private int uOpaque;
     private int uTint, uTintOn, uGloss, uShadow, uScale;
     private int aPos;
     private int fbo, texPhoto, texBlur, texBlur2;
@@ -156,6 +157,7 @@ class GlassRenderer {
         uPanel = GLES20.glGetUniformLocation(program, "u_panel");
         uRadius = GLES20.glGetUniformLocation(program, "u_radius");
         uWhite = GLES20.glGetUniformLocation(program, "u_white");
+        uOpaque = GLES20.glGetUniformLocation(program, "u_opaque");
         uIor = GLES20.glGetUniformLocation(program, "u_ior");
         uDepth = GLES20.glGetUniformLocation(program, "u_depth");
         uThickness = GLES20.glGetUniformLocation(program, "u_thickness");
@@ -313,6 +315,9 @@ class GlassRenderer {
         GLES20.glUniform1f(uRadius, p.r);
         float uu = fullW / 1000f;
         GLES20.glUniform1f(uWhite, st.whitePct / 100f);
+        // 「更不透明」用的实色：背景偏暗就用近黑，偏亮就用近白（对应系统的深/浅色外观）
+        if (st.themeDark) GLES20.glUniform3f(uOpaque, 0.07f, 0.07f, 0.08f);
+        else GLES20.glUniform3f(uOpaque, 0.97f, 0.97f, 0.98f);
         GLES20.glUniform1f(uIor, st.ior);
         final float depthPx = Math.max(2f, p.h * 0.5f * (st.depthPct / 100f));
         GLES20.glUniform1f(uDepth, depthPx);

@@ -22,9 +22,21 @@ class Composer {
 
     /** base 必须可变；结果为 base 本身 */
     Bitmap composeOn(Bitmap base, int W, int H, WatermarkPainter.Style st) {
+        return composeOn(base, W, H, st, 0f, 0f);
+    }
+
+    /** jsx/jsy 是拖动形变（-1~1），只有预览会传非 0 */
+    Bitmap composeOn(Bitmap base, int W, int H, WatermarkPainter.Style st, float jsx, float jsy) {
         Canvas c = new Canvas(base);
-        WatermarkPainter.Layout L = WatermarkPainter.layout(W, H, st);
+        WatermarkPainter.Layout L = WatermarkPainter.layout(W, H, st, jsx, jsy);
         WatermarkPainter.Panel panel = L.panel;
+
+        // 亮度要在画玻璃之前量：玻璃本身会改变底色。顺带决定「不透明档」用白还是黑。
+        if (st.autoText) {
+            float lum = WatermarkPainter.measureLum(base, L);
+            L.darkText = lum > 0.62f;
+            st.themeDark = lum < 0.48f;
+        }
 
         if (glass != null && panel.w > 4 && panel.h > 2) {
             float u = W / 1000f;
@@ -81,10 +93,6 @@ class Composer {
             }
         }
 
-        // 画玻璃之前量背景亮度：玻璃本身会改变底色，先量才准
-        if (st.autoText) {
-            L.darkText = WatermarkPainter.measureLum(base, L) > 0.62f;
-        }
         WatermarkPainter.draw(c, L, st);
         return base;
     }
