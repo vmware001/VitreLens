@@ -653,11 +653,25 @@ public class MainActivity extends Activity {
     }
 
     /** 缩到极小再放大，得到一个廉价但好看的模糊背景 */
+    /**
+     * 整屏背景：按屏幕宽度出一张真图，再打一层**轻微**高斯。
+     *
+     * <p>原来是缩到 140px 宽再放大 3 倍 —— 那根本不是模糊，是把图压成马赛克，
+     * 放到 720 宽屏幕上每个像素铺 5 个点，所以糊成一片。
+     * 现在保留分辨率（最多 900 宽），只叠 sigma≈4 的轻模糊，背景还能看出是什么。
+     */
     private Bitmap makeBackdrop(Bitmap src) {
-        int w = 140;
+        int w = Math.min(900, Math.max(360, getResources().getDisplayMetrics().widthPixels));
         int h = Math.max(1, Math.round(w * (float) src.getHeight() / src.getWidth()));
         Bitmap small = Bitmap.createScaledBitmap(src, w, h, true);
-        Bitmap out = Bitmap.createScaledBitmap(small, w * 3, h * 3, true);
+
+        int[] px = new int[w * h];
+        small.getPixels(px, 0, w, 0, 0, w, h);
+        // 3 次盒式宽度 2r+1 时 sigma ≈ r，这里取 4 左右
+        Blur.boxBlur(px, w, h, Math.max(3, Math.round(w / 120f)));
+
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        out.setPixels(px, 0, w, 0, 0, w, h);
         if (small != out) small.recycle();
         return out;
     }

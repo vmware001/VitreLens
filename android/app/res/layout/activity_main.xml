@@ -182,6 +182,7 @@
             android:layout_height="0dp"
             android:layout_weight="1"
             android:orientation="horizontal"
+            android:layout_marginTop="10dp"
             android:paddingStart="12dp"
             android:paddingEnd="12dp"
             android:baselineAligned="false">
@@ -190,8 +191,7 @@
                 android:id="@+id/rail"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:paddingTop="6dp" />
+                android:orientation="vertical" />
 
             <ScrollView
                 android:id="@+id/scroll"
@@ -207,7 +207,6 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:paddingTop="6dp"
                     android:paddingBottom="20dp" />
             </ScrollView>
         </LinearLayout>
