@@ -1105,6 +1105,48 @@ public class MainActivity extends Activity {
      * <p>背景是静态位图，所以每个面板只需要算一次（换照片时重算）。
      * 界面上的文字/控件画在这层之上，所以看到的是「背景被玻璃折射」的效果。
      */
+    /**
+     * 把位图四个角按圆角裁掉（alpha 清零，边缘 1px 做抗锯齿）。
+     * 只处理四个 radius×radius 的方块，代价可以忽略。
+     */
+    private Bitmap roundCorners(Bitmap src, int w, int h, float radius) {
+        if (src == null) return null;
+        Bitmap out = src;
+        try {
+            if (!src.isMutable()) {
+                out = src.copy(Bitmap.Config.ARGB_8888, true);
+            }
+            if (out == null) return src;
+            float r = Math.max(0f, Math.min(radius, Math.min(w, h) / 2f));
+            int ri = (int) Math.ceil(r);
+            int[] row = new int[Math.max(1, ri)];
+            for (int y = 0; y < ri; y++) {
+                for (int x = 0; x < ri; x++) {
+                    // 以左上角圆心 (r, r) 为基准算覆盖率
+                    float dx = Math.max(0f, r - x - 0.5f);
+                    float dy = Math.max(0f, r - y - 0.5f);
+                    float d = (float) Math.hypot(dx, dy);
+                    float cover = Math.max(0f, Math.min(1f, r - d + 0.5f));
+                    if (cover >= 1f) continue;
+                    setCornerAlpha(out, w, h, x, y, cover);
+                    setCornerAlpha(out, w, h, w - 1 - x, y, cover);
+                    setCornerAlpha(out, w, h, x, h - 1 - y, cover);
+                    setCornerAlpha(out, w, h, w - 1 - x, h - 1 - y, cover);
+                }
+            }
+        } catch (Throwable t) {
+            return src;
+        }
+        return out;
+    }
+
+    private void setCornerAlpha(Bitmap b, int w, int h, int x, int y, float cover) {
+        if (x < 0 || y < 0 || x >= w || y >= h) return;
+        int c = b.getPixel(x, y);
+        int a = Math.round(((c >>> 24) & 0xFF) * cover);
+        b.setPixel(x, y, (a << 24) | (c & 0x00FFFFFF));
+    }
+
     /** 屏幕尺寸的清晰背景：centerCrop 到整屏，给界面玻璃取样 */
     private Bitmap makeSharpBackdrop(Bitmap src) {
         int vw = Math.max(1, backdrop.getWidth());
@@ -1190,21 +1232,9 @@ public class MainActivity extends Activity {
                 // 着色器在圆角之外原样输出背景像素（mask=0），贴到方形 View 上
                 // 四个角就会露出「没处理过的原始背景」—— 看起来就是四个硬棱角。
                 // 这里按圆角把四角抠成透明，露出下面的整屏背景。
-                Bitmap masked = res;
-                try {
-                    masked = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
-                    Canvas mc = new Canvas(masked);
-                    mc.drawBitmap(res, 0, 0, null);
-                    android.graphics.Paint mp = new android.graphics.Paint(
-                            android.graphics.Paint.ANTI_ALIAS_FLAG);
-                    mp.setColor(0xFF000000);
-                    mp.setXfermode(new android.graphics.PorterDuffXfermode(
-                            android.graphics.PorterDuff.Mode.DST_IN));
-                    mc.drawRoundRect(new android.graphics.RectF(0, 0, vw, vh),
-                            radiusPx, radiusPx, mp);
-                } catch (Throwable ignored) {
-                    masked = res;
-                }
+                // 直接按圆角把四角的 alpha 清零。之前用 PorterDuff.DST_IN 画一遍圆角，
+                // 实测在模拟器上没生效 —— 四个角仍然是实心的，于是面板边界看起来是个直角矩形。
+                Bitmap masked = roundCorners(res, vw, vh, radiusPx);
                 v.setBackground(new android.graphics.drawable.BitmapDrawable(
                         getResources(), masked));
             });

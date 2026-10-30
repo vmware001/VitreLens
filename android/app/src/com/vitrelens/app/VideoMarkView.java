@@ -146,11 +146,28 @@ public class VideoMarkView extends View {
             c.drawRoundRect(panelRect, r, r, glassPaint);
             glassPaint.setShader(null);
 
-            // 顶部高光
+            // 顶部高光：只在最上面 22% 有一条，短而亮
             hiPaint.setStyle(Paint.Style.FILL);
             hiPaint.setShader(new LinearGradient(0, panelRect.top, 0,
-                    panelRect.top + panelRect.height() * 0.55f,
-                    new int[]{0x5AFFFFFF, 0x00FFFFFF}, null, Shader.TileMode.CLAMP));
+                    panelRect.top + panelRect.height() * 0.22f,
+                    new int[]{0x66FFFFFF, 0x00FFFFFF}, null, Shader.TileMode.CLAMP));
+            c.drawRoundRect(panelRect, r, r, hiPaint);
+
+            // 底部内阴影：玻璃「厚」的感觉主要来自这一层，
+            // 少了它整块就是一片平渐变，看着像只糊了一层高斯。
+            hiPaint.setShader(new LinearGradient(0, panelRect.bottom - panelRect.height() * 0.42f,
+                    0, panelRect.bottom,
+                    new int[]{0x00000000, 0x3A000000}, null, Shader.TileMode.CLAMP));
+            c.drawRoundRect(panelRect, r, r, hiPaint);
+
+            // 左右两侧的暗边，进一步收紧形状
+            hiPaint.setShader(new LinearGradient(panelRect.left, 0,
+                    panelRect.left + panelRect.width() * 0.10f, 0,
+                    new int[]{0x33000000, 0x00000000}, null, Shader.TileMode.CLAMP));
+            c.drawRoundRect(panelRect, r, r, hiPaint);
+            hiPaint.setShader(new LinearGradient(panelRect.right, 0,
+                    panelRect.right - panelRect.width() * 0.10f, 0,
+                    new int[]{0x33000000, 0x00000000}, null, Shader.TileMode.CLAMP));
             c.drawRoundRect(panelRect, r, r, hiPaint);
             hiPaint.setShader(null);
 

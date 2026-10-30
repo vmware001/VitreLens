@@ -559,36 +559,70 @@ class ControlPanel {
         return box;
     }
 
-    /** 色相轮盘 + 状态说明 */
+    /** 文字颜色：一行色块 + 说明，点开是 HSB 轮盘弹窗 */
     private void hueRow(LinearLayout parent) {
         LinearLayout row = new LinearLayout(act);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(6), 0, dp(2));
+        row.setPadding(0, dp(6), 0, dp(4));
 
-        final HueWheelView wheel = new HueWheelView(act);
-        wheel.setHue(st.textHue);
-        LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(dp(72), dp(72));
-        wlp.rightMargin = dp(14);
-        row.addView(wheel, wlp);
+        final View swatch = new View(act);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(dp(40), dp(40));
+        slp.rightMargin = dp(14);
+        row.addView(swatch, slp);
 
         final TextView info = new TextView(act);
         info.setTextSize(11.5f);
         info.setTextColor(0xB3FFFFFF);
-        info.setLineSpacing(dp(2), 1f);
         row.addView(info, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        final Runnable sync = () -> info.setText(st.textHue < 0
-                ? "自动：白字 / 深色字随背景明暗切换\n点轮盘外圈选色相，点中心回到自动"
-                : "色相 " + Math.round(st.textHue) + "°\n点中心可回到自动");
+        final Runnable sync = () -> {
+            android.graphics.drawable.GradientDrawable g =
+                    new android.graphics.drawable.GradientDrawable();
+            g.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+            g.setColor(st.textHue < 0 ? 0xFFFFFFFF
+                    : android.graphics.Color.HSVToColor(new float[]{
+                    ((st.textHue % 360f) + 360f) % 360f,
+                    Math.max(0f, Math.min(1f, st.textSat)),
+                    Math.max(0f, Math.min(1f, st.textVal))}));
+            g.setStroke(dp(1.5f), 0x59FFFFFF);
+            swatch.setBackground(g);
+            info.setText(st.textHue < 0
+                    ? "自动（白字 / 深色字随背景）\n点这里打开 HSB 轮盘"
+                    : String.format(Locale.US, "色相 %d°  饱和 %d%%  明度 %d%%\n点这里继续调整",
+                    Math.round(st.textHue), Math.round(st.textSat * 100),
+                    Math.round(st.textVal * 100)));
+        };
         sync.run();
 
-        wheel.setOnHue(h -> {
-            st.textHue = h;
-            sync.run();
-            onChange.run();
+        row.setOnClickListener(v -> {
+            final HsbWheelView wheel = new HsbWheelView(act);
+            wheel.setColor(st.textHue < 0 ? 0f : st.textHue, st.textSat, st.textVal);
+            wheel.setOnChange((h, sa, va) -> {
+                st.textHue = h;
+                st.textSat = sa;
+                st.textVal = va;
+                sync.run();
+                onChange.run();
+            });
+            int size = dp(250);
+            LinearLayout box = new LinearLayout(act);
+            box.setPadding(dp(16), dp(12), dp(16), dp(4));
+            box.addView(wheel, new LinearLayout.LayoutParams(size, size));
+
+            new android.app.AlertDialog.Builder(act)
+                    .setTitle("文字颜色")
+                    .setView(box)
+                    .setPositiveButton("完成", null)
+                    .setNeutralButton("恢复自动", (d, w) -> {
+                        st.textHue = -1f;
+                        sync.run();
+                        onChange.run();
+                    })
+                    .show();
         });
+
         parent.addView(row, matchWrap());
     }
 

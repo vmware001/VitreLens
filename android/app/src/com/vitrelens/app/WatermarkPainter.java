@@ -36,6 +36,9 @@ class WatermarkPainter {
         boolean themeDark;
         /** 文字色相 0~360；-1 表示不启用（保持白/黑自适应） */
         float textHue = -1f;
+        /** 文字饱和度 / 明度（textHue >= 0 时生效） */
+        float textSat = 0.62f;
+        float textVal = 1f;
         /** 磨砂档的实色：0 = 按背景明暗自动，1 = 深色，2 = 浅色 */
         int frostTone = 0;
         /** true 时 depthPct / thicknessPct / edgePct 的单位是像素，而不是面板高度的百分比。
@@ -95,7 +98,7 @@ class WatermarkPainter {
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
             s.posXPct = posXPct; s.autoText = autoText; s.themeDark = themeDark; s.pixelUnits = pixelUnits;
-            s.textHue = textHue; s.frostTone = frostTone;
+            s.textHue = textHue; s.textSat = textSat; s.textVal = textVal; s.frostTone = frostTone;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
             s.logoRight = logoRight;
@@ -163,7 +166,9 @@ class WatermarkPainter {
         L.u = W / 1000f;
         if (st.textHue >= 0f) {
             L.textRgb = Color.HSVToColor(new float[]{
-                    ((st.textHue % 360f) + 360f) % 360f, 0.62f, 1f}) & 0xFFFFFF;
+                    ((st.textHue % 360f) + 360f) % 360f,
+                    Math.max(0f, Math.min(1f, st.textSat)),
+                    Math.max(0f, Math.min(1f, st.textVal))}) & 0xFFFFFF;
         }
         float u = L.u;
         L.padX = 32 * u;

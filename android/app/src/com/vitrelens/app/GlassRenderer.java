@@ -313,7 +313,10 @@ class GlassRenderer {
         GLES20.glUniform2f(uRes, w, h);
         GLES20.glUniform4f(uPanel, p.x, p.y, p.w, p.h);
         GLES20.glUniform1f(uRadius, p.r);
-        float uu = fullW / 1000f;
+        // 水印用「画幅宽度 / 1000」做相对单位；界面面板尺寸差很多（左栏 108px、右面板 544px），
+        // 再按宽度算会让两者的边缘亮线、投影扩散差出 5 倍 —— 看着就不是同一个材质。
+        // pixelUnits 模式下固定成 1，两块面板的参数就完全一致了。
+        float uu = st.pixelUnits ? 1.0f : fullW / 1000f;
         GLES20.glUniform1f(uWhite, st.whitePct / 100f);
         // 「更不透明」用的实色：背景偏暗就用近黑，偏亮就用近白（对应系统的深/浅色外观）
         // frostTone：0 自动（按背景明暗）、1 强制深色、2 强制浅色
