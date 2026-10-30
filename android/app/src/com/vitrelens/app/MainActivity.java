@@ -58,11 +58,11 @@ public class MainActivity extends Activity {
     /** 批量导出用：这一张处理完后要做什么 */
     /** 批量导出：这一张加载完之后要做的事 */
     private Runnable afterLoad;
-    /** 整屏背景位图，界面上的液态玻璃面板要拿它取样 */
+    /**
+     * 已 centerCrop 到整屏、并统一做过一次高斯的背景。
+     * 背景 ImageView 和两块液态玻璃面板共用这一张，保证模糊程度完全一致。
+     */
     private Bitmap backdropBmp;
-    /** 屏幕尺寸的清晰背景（centerCrop 过），界面玻璃拿它取样：
-     *  背景本身已经模糊过，玻璃再糊一遍就没有细节可折射了，等于白做。 */
-    private Bitmap backdropSharp;
     private TextView hint, status, sizeInfo, btnPick, btnExport, btnDetail;
     private boolean detailMode;
     private float closeUpPan = 0.5f;
@@ -953,7 +953,6 @@ public class MainActivity extends Activity {
                     hint.setVisibility(View.GONE);
                     btnExport.setEnabled(true);
                     backdropBmp = bg;
-                    backdropSharp = makeSharpBackdrop(bmp);
                     backdrop.setImageBitmap(bg);
                     applyUiGlass();
                     fillFromMeta();
@@ -978,28 +977,29 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** 缩到极小再放大，得到一个廉价但好看的模糊背景 */
     /**
-     * 整屏背景：按屏幕宽度出一张真图，再打一层**轻微**高斯。
+     * 先把照片 centerCrop 成屏幕尺寸，再对**整屏**统一做一次轻高斯。
      *
-     * <p>原来是缩到 140px 宽再放大 3 倍 —— 那根本不是模糊，是把图压成马赛克，
-     * 放到 720 宽屏幕上每个像素铺 5 个点，所以糊成一片。
-     * 现在保留分辨率（最多 900 宽），只叠 sigma≈4 的轻模糊，背景还能看出是什么。
+     * <p>这张位图同时用于背景显示和两块玻璃面板的取样。这样面板里一定也有高斯，
+     * 且左栏与右面板共享同一个模糊半径；面板自身只负责折射、反射和边缘，不再二次模糊。
      */
     private Bitmap makeBackdrop(Bitmap src) {
-        int w = Math.min(900, Math.max(360, getResources().getDisplayMetrics().widthPixels));
-        int h = Math.max(1, Math.round(w * (float) src.getHeight() / src.getWidth()));
-        Bitmap small = Bitmap.createScaledBitmap(src, w, h, true);
+        int vw = Math.max(1, backdrop.getWidth());
+        int vh = Math.max(1, backdrop.getHeight());
+        float scale = Math.max(vw / (float) src.getWidth(), vh / (float) src.getHeight());
+        int sw = Math.max(vw, Math.round(src.getWidth() * scale));
+        int sh = Math.max(vh, Math.round(src.getHeight() * scale));
+        Bitmap scaled = Bitmap.createScaledBitmap(src, sw, sh, true);
 
-        int[] px = new int[w * h];
-        small.getPixels(px, 0, w, 0, 0, w, h);
-        // 3 次盒式宽度 2r+1 时 sigma ≈ r，这里取 4 左右
-        // 很轻的一层：只要把照片的锐度压下去，玻璃面板自己会再做折射
-        Blur.boxBlur(px, w, h, Math.max(2, Math.round(w / 260f)));
+        Bitmap out = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        c.drawBitmap(scaled, (vw - sw) / 2f, (vh - sh) / 2f, null);
+        if (scaled != out) scaled.recycle();
 
-        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-        out.setPixels(px, 0, w, 0, 0, w, h);
-        if (small != out) small.recycle();
+        int[] px = new int[vw * vh];
+        out.getPixels(px, 0, vw, 0, 0, vw, vh);
+        Blur.boxBlur(px, vw, vh, Math.max(2, Math.round(vw / 260f)));
+        out.setPixels(px, 0, vw, 0, 0, vw, vh);
         return out;
     }
 
@@ -1232,21 +1232,6 @@ public class MainActivity extends Activity {
         b.setPixel(x, y, (a << 24) | (c & 0x00FFFFFF));
     }
 
-    /** 屏幕尺寸的清晰背景：centerCrop 到整屏，给界面玻璃取样 */
-    private Bitmap makeSharpBackdrop(Bitmap src) {
-        int vw = Math.max(1, backdrop.getWidth());
-        int vh = Math.max(1, backdrop.getHeight());
-        float s = Math.max(vw / (float) src.getWidth(), vh / (float) src.getHeight());
-        int w = Math.max(vw, Math.round(src.getWidth() * s));
-        int h = Math.max(vh, Math.round(src.getHeight() * s));
-        Bitmap scaled = Bitmap.createScaledBitmap(src, w, h, true);
-        Bitmap out = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
-        Canvas c = new Canvas(out);
-        c.drawBitmap(scaled, (vw - w) / 2f, (vh - h) / 2f, null);
-        if (scaled != out) scaled.recycle();
-        return out;
-    }
-
     private void applyUiGlass() {
         if (glass == null || backdropBmp == null) return;
         // 左栏真正显示的是 rail 里的那颗胶囊，玻璃要贴在它上面
@@ -1271,9 +1256,8 @@ public class MainActivity extends Activity {
         float vx = vLoc[0] - bLoc[0];
         float vy = vLoc[1] - bLoc[1];
 
-        // 清晰背景已经是屏幕尺寸，视图坐标就是位图坐标
-        Bitmap srcBmp = (backdropSharp != null && !backdropSharp.isRecycled())
-                ? backdropSharp : backdropBmp;
+        // 已模糊的整屏背景与视图坐标 1:1 对齐；两块面板取样的就是同一张高斯结果
+        Bitmap srcBmp = backdropBmp;
         int bx = Math.max(0, Math.round(vx));
         int by = Math.max(0, Math.round(vy));
         int bw = Math.min(vw, srcBmp.getWidth() - bx);
