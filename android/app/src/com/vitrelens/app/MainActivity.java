@@ -377,7 +377,9 @@ public class MainActivity extends Activity {
         final long skip = meta.eoiEnd + meta.trailerLeadLength;
         final long len = meta.trailerVideoLength;
         final ProgressDialog pd = ProgressDialog.show(this, "", "正在生成高质量预览…", true, false);
-        new Thread(() -> {
+        // 必须和正式导出共用同一条 GL 队列。普通线程里 eglMakeCurrent 会失败，
+        // 之前失败后静默回退 Canvas，导致所谓「高质量预览」其实还是近似水印。
+        glQueue.execute(() -> {
             boolean ok = false;
             try {
                 File src = new File(getCacheDir(), "vl_preview.mp4");
@@ -404,7 +406,7 @@ public class MainActivity extends Activity {
                     startPlainPreview(uri, skip, len);
                 }
             });
-        }).start();
+        });
     }
 
     /** 回退：直接播原视频，水印用 Canvas 近似 */
