@@ -34,6 +34,10 @@ class WatermarkPainter {
         boolean autoText = true;
         /** 背景偏暗：不透明档的实色跟着走（浅色主题近白、深色主题近黑） */
         boolean themeDark;
+        /** 文字色相 0~360；-1 表示不启用（保持白/黑自适应） */
+        float textHue = -1f;
+        /** 磨砂档的实色：0 = 按背景明暗自动，1 = 深色，2 = 浅色 */
+        int frostTone = 0;
         /** true 时 depthPct / thicknessPct / edgePct 的单位是像素，而不是面板高度的百分比。
          *  界面上的玻璃面板尺寸差很大（左栏 54×204dp、右面板 272×248dp），
          *  用百分比会让两块的斜面宽度差出好几倍，看起来根本不是一个材质。 */
@@ -91,6 +95,7 @@ class WatermarkPainter {
             s.showParams = showParams; s.showMeta = showMeta;
             s.brand = brand; s.align = align; s.font = font; s.nameMaterial = nameMaterial;
             s.posXPct = posXPct; s.autoText = autoText; s.themeDark = themeDark; s.pixelUnits = pixelUnits;
+            s.textHue = textHue; s.frostTone = frostTone;
             s.widthPct = widthPct; s.gapPct = gapPct; s.glassHeightPct = glassHeightPct;
             s.logoSizePct = logoSizePct; s.logoPos = logoPos; s.logoPosPct = logoPosPct;
             s.logoRight = logoRight;
@@ -123,6 +128,8 @@ class WatermarkPainter {
         boolean logoOn;
         /** 背景偏亮时改用深色文字（autoText 打开时才生效） */
         boolean darkText;
+        /** 文字主色（RGB，不含 alpha）；由 textHue 决定，没启用时是白 */
+        int textRgb = 0xFFFFFF;
         /** logo 与参数之间的白色短竖线；sepX <= 0 表示不画 */
         float sepX, sepTop, sepBottom;
         boolean hasContent;
@@ -154,6 +161,10 @@ class WatermarkPainter {
         if (st.params == null) st.params = "";
         if (st.meta == null) st.meta = "";
         L.u = W / 1000f;
+        if (st.textHue >= 0f) {
+            L.textRgb = Color.HSVToColor(new float[]{
+                    ((st.textHue % 360f) + 360f) % 360f, 0.62f, 1f}) & 0xFFFFFF;
+        }
         float u = L.u;
         L.padX = 32 * u;
         L.padY = 22 * u;
@@ -195,7 +206,9 @@ class WatermarkPainter {
             float lineGap = metaSize * 0.62f;
 
             // 哈苏是 10:1 的横排字标，按普通字号算高度只有 0.1 倍，小到看不清
-            float logoH = nameSize * (st.brand == 2 ? 1.2f : 1.0f) * (st.logoSizePct / 100f);
+            // Logo 高度不跟「机型字号」走：调名字大小时图标跟着变很怪。
+            // 固定以 24u 为基准（等于默认字号），再乘 logoSizePct。
+            float logoH = 24f * u * scale * (st.brand == 2 ? 1.2f : 1.0f) * (st.logoSizePct / 100f);
             float logoW = st.showBrand ? logoWidth(st.brand, logoH) : 0;
 
             float gapA = logoW > 0 ? nameSize * 0.55f : 0;
@@ -348,9 +361,9 @@ class WatermarkPainter {
         if (st.name.length() > 0) {
             Paint p = stylePaint(L.nameSize, TRACK_NAME, st.font, true, st.name);
             if ("liquid".equals(st.nameMaterial)) {
-                drawLiquidText(c, st.name, L.nameX, L.nameBaseline, L.nameSize, L.slant, u, st.font);
+                drawLiquidText(c, st.name, L.nameX, L.nameBaseline, L.nameSize, L.slant, u, st.font, L.textRgb);
             } else if ("frost".equals(st.nameMaterial)) {
-                drawFrostText(c, st.name, L.nameX, L.nameBaseline, L.nameSize, L.slant, u, st.font);
+                drawFrostText(c, st.name, L.nameX, L.nameBaseline, L.nameSize, L.slant, u, st.font, L.textRgb);
             } else {
                 // 亮背景上用深色字，阴影反过来用浅色，否则深字压深影会糊成一团
                 p.setColor(textColor(L, 0xFF));
@@ -415,76 +428,103 @@ class WatermarkPainter {
     /* ── 机型名的三种材质 ── */
 
     /** 液态玻璃：亮边 + 渐变白 + 上方高光，近似网页版的折射字 */
+    /** 配好字体/字号/字距的画笔（玻璃文字材质共用） */
+    private static Paint glyphPaint(float size, String font, String text, float tracking) {
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setTypeface(typeface(font, true, text));
+        p.setTextSize(size);
+        p.setLetterSpacing(tracking);
+        return p;
+    }
+
+    /** 把颜色往白（t>0）或黑（t<0）混，返回不含 alpha 的 RGB */
+    private static int shade(int rgb, float t) {
+        float r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+        if (t >= 0) {
+            r += (255 - r) * t;
+            g += (255 - g) * t;
+            b += (255 - b) * t;
+        } else {
+            r *= 1 + t;
+            g *= 1 + t;
+            b *= 1 + t;
+        }
+        return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
+    }
+
+    /**
+     * 液态玻璃文字：多层叠加而不是一味加白。
+     * 落影 → 上亮下暗的主体（保留色相）→ 下移的描边层（不同透明度，做出厚度）
+     * → 顶部细高光 → 下缘冷色折射。
+     * 原来的高光/冷边各 0.03 倍字号的粗描边，小字号时糊成一圈白边，很脏。
+     */
     private static void drawLiquidText(Canvas c, String text, float x, float baseline,
-                                       float size, float slant, float u, String font) {
+                                       float size, float slant, float u, String font, int rgb) {
         c.save();
         c.translate(x, baseline);
         if (slant != 0) c.skew(-slant, 0);
 
-        Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
-        glow.setTypeface(typeface(font, true, text));
-        glow.setTextSize(size);
-        glow.setLetterSpacing(TRACK_NAME);
-        glow.setColor(0x40000000);
-        glow.setMaskFilter(new BlurMaskFilter(Math.max(2f, size * 0.16f), BlurMaskFilter.Blur.NORMAL));
-        c.drawText(text, 0, size * 0.02f, glow);
+        Paint sh = glyphPaint(size, font, text, TRACK_NAME);
+        sh.setColor(0x38000000);
+        sh.setMaskFilter(new BlurMaskFilter(Math.max(1.2f, size * 0.09f),
+                BlurMaskFilter.Blur.NORMAL));
+        c.drawText(text, 0, size * 0.035f, sh);
 
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setTypeface(typeface(font, true, text));
-        p.setTextSize(size);
-        p.setLetterSpacing(TRACK_NAME);
-        p.setShader(new LinearGradient(0, -size * 0.78f, 0, -size * 0.05f,
-                new int[]{0xFFFFFFFF, 0xF2FFFFFF, 0xD9F2FAFF},
-                new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
-        c.drawText(text, 0, 0, p);
+        Paint body = glyphPaint(size, font, text, TRACK_NAME);
+        body.setShader(new LinearGradient(0, -size * 0.74f, 0, -size * 0.02f,
+                new int[]{0xFF000000 | shade(rgb, 0.55f),
+                        0xFF000000 | shade(rgb, 0.10f),
+                        0xFF000000 | shade(rgb, -0.18f)},
+                new float[]{0f, 0.46f, 1f}, Shader.TileMode.CLAMP));
+        c.drawText(text, 0, 0, body);
 
-        // 上缘一道硬高光
-        Paint hi = new Paint(Paint.ANTI_ALIAS_FLAG);
-        hi.setTypeface(typeface(font, true, text));
-        hi.setTextSize(size);
-        hi.setLetterSpacing(TRACK_NAME);
+        Paint layer = glyphPaint(size, font, text, TRACK_NAME);
+        layer.setStyle(Paint.Style.STROKE);
+        layer.setStrokeWidth(Math.max(0.8f, size * 0.016f));
+        layer.setColor((0x4D << 24) | shade(rgb, 0.25f));
+        c.drawText(text, 0, size * 0.012f, layer);
+
+        Paint hi = glyphPaint(size, font, text, TRACK_NAME);
         hi.setStyle(Paint.Style.STROKE);
-        hi.setStrokeWidth(Math.max(1f, size * 0.030f));
-        hi.setColor(0xD9FFFFFF);
-        c.drawText(text, 0, -size * 0.016f, hi);
+        hi.setStrokeWidth(Math.max(0.7f, size * 0.012f));
+        hi.setColor(0x8CFFFFFF);
+        c.drawText(text, 0, -size * 0.004f, hi);
 
-        // 下缘一道淡蓝，模拟玻璃底部的冷色折射
-        Paint lo = new Paint(Paint.ANTI_ALIAS_FLAG);
-        lo.setTypeface(typeface(font, true, text));
-        lo.setTextSize(size);
-        lo.setLetterSpacing(TRACK_NAME);
+        Paint lo = glyphPaint(size, font, text, TRACK_NAME);
         lo.setStyle(Paint.Style.STROKE);
-        lo.setStrokeWidth(Math.max(1f, size * 0.026f));
-        lo.setColor(0x6690C8FF);
-        c.drawText(text, 0, size * 0.014f, lo);
+        lo.setStrokeWidth(Math.max(0.7f, size * 0.010f));
+        lo.setColor(0x3D9EC8FF);
+        c.drawText(text, 0, size * 0.018f, lo);
 
         c.restore();
     }
 
     /** 磨砂玻璃：半透明 + 模糊描边，像磨过的字 */
+    /**
+     * 毛玻璃文字：一层柔光 + 半透明本体 + 一道细边。
+     * 原来柔光画了两遍、本体又加模糊，边缘散得太开，小字号看着像一团脏白。
+     */
     private static void drawFrostText(Canvas c, String text, float x, float baseline,
-                                      float size, float slant, float u, String font) {
+                                      float size, float slant, float u, String font, int rgb) {
         c.save();
         c.translate(x, baseline);
         if (slant != 0) c.skew(-slant, 0);
 
-        // 磨砂玻璃：明显更"糊"、更半透明，边缘散开
-        Paint halo = new Paint(Paint.ANTI_ALIAS_FLAG);
-        halo.setTypeface(typeface(font, true, text));
-        halo.setTextSize(size);
-        halo.setLetterSpacing(TRACK_NAME);
-        halo.setColor(0x44FFFFFF);
-        halo.setMaskFilter(new BlurMaskFilter(Math.max(3f, size * 0.22f), BlurMaskFilter.Blur.NORMAL));
-        c.drawText(text, 0, 0, halo);
+        Paint halo = glyphPaint(size, font, text, TRACK_NAME);
+        halo.setColor(0x33FFFFFF);
+        halo.setMaskFilter(new BlurMaskFilter(Math.max(1.8f, size * 0.12f),
+                BlurMaskFilter.Blur.NORMAL));
         c.drawText(text, 0, 0, halo);
 
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setTypeface(typeface(font, true, text));
-        p.setTextSize(size);
-        p.setLetterSpacing(TRACK_NAME);
-        p.setColor(0xA6FFFFFF);
-        p.setMaskFilter(new BlurMaskFilter(Math.max(1f, size * 0.035f), BlurMaskFilter.Blur.NORMAL));
-        c.drawText(text, 0, 0, p);
+        Paint body = glyphPaint(size, font, text, TRACK_NAME);
+        body.setColor((0xCC << 24) | shade(rgb, 0.18f));
+        c.drawText(text, 0, 0, body);
+
+        Paint edge = glyphPaint(size, font, text, TRACK_NAME);
+        edge.setStyle(Paint.Style.STROKE);
+        edge.setStrokeWidth(Math.max(0.7f, size * 0.011f));
+        edge.setColor(0x59FFFFFF);
+        c.drawText(text, 0, 0, edge);
 
         c.restore();
     }
@@ -685,7 +725,16 @@ class WatermarkPainter {
 
     /** 文字颜色：深色模式下用近黑，白色模式保持纯白，alpha 由调用方给 */
     private static int textColor(Layout L, int alpha) {
-        return L.darkText ? ((alpha << 24) & 0xFF000000) : ((alpha << 24) | 0x00FFFFFF);
+        int a = (alpha & 0xFF) << 24;
+        // 亮背景上要压暗，但保留色相（直接给纯黑会让彩色字变灰）
+        if (L.darkText) {
+            int c = L.textRgb;
+            int r = Math.round(((c >> 16) & 0xFF) * 0.16f);
+            int g = Math.round(((c >> 8) & 0xFF) * 0.16f);
+            int b = Math.round((c & 0xFF) * 0.16f);
+            return a | (r << 16) | (g << 8) | b;
+        }
+        return a | L.textRgb;
     }
 
     /** 把图像下部 ratio 之后的内容清成透明（蔡司底部的弧线不属于字样） */

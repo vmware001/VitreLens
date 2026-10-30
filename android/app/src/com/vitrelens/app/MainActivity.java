@@ -368,7 +368,11 @@ public class MainActivity extends Activity {
                     return;
                 }
                 mp.setSurface(new Surface(st));
-                videoMark.setVideoSize(mp.getVideoWidth(), mp.getVideoHeight());
+                // getVideoWidth() 返回的是编码尺寸，竖拍视频常带 90° 旋转标记，
+                // 直接用会把画面当成横的 → 拉伸成 1:1。这里按旋转后的显示尺寸来。
+                int[] disp = videoDisplaySize(f);
+                videoMark.setVideoSize(disp != null ? disp[0] : mp.getVideoWidth(),
+                        disp != null ? disp[1] : mp.getVideoHeight());
                 mp.start();
                 videoPlaying = true;
                 btnPlay.setText("停止");
@@ -395,6 +399,33 @@ public class MainActivity extends Activity {
         videoView.setTransform(m);
     }
 
+    /** 视频旋转之后的显示尺寸（竖拍视频的编码尺寸是横的） */
+    private int[] videoDisplaySize(java.io.File f) {
+        android.media.MediaMetadataRetriever mm = new android.media.MediaMetadataRetriever();
+        try {
+            mm.setDataSource(f.getAbsolutePath());
+            String ws = mm.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+            String hs = mm.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+            String rs = mm.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+            if (ws == null || hs == null) return null;
+            int w = Integer.parseInt(ws), h = Integer.parseInt(hs);
+            int rot = rs == null ? 0 : Integer.parseInt(rs);
+            if (rot == 90 || rot == 270) {
+                int t = w;
+                w = h;
+                h = t;
+            }
+            return new int[]{w, h};
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { mm.release(); } catch (Throwable ignored) { }
+        }
+    }
+
     private void stopVideo() {
         videoPlaying = false;
         if (player != null) {
@@ -405,7 +436,8 @@ public class MainActivity extends Activity {
         videoView.setVisibility(View.GONE);
         videoMark.setVisibility(View.GONE);
         preview.setVisibility(View.VISIBLE);
-        hint.setVisibility(View.VISIBLE);
+        // 已经加载过照片就不能再把「选择一张照片开始」放出来
+        hint.setVisibility(previewBase == null ? View.VISIBLE : View.GONE);
         btnPlay.setText("播放");
         btnPlay.setSelected(false);
     }

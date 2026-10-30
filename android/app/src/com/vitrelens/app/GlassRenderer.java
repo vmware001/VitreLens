@@ -316,7 +316,9 @@ class GlassRenderer {
         float uu = fullW / 1000f;
         GLES20.glUniform1f(uWhite, st.whitePct / 100f);
         // 「更不透明」用的实色：背景偏暗就用近黑，偏亮就用近白（对应系统的深/浅色外观）
-        if (st.themeDark) GLES20.glUniform3f(uOpaque, 0.07f, 0.07f, 0.08f);
+        // frostTone：0 自动（按背景明暗）、1 强制深色、2 强制浅色
+        boolean darkTone = st.frostTone == 1 || (st.frostTone == 0 && st.themeDark);
+        if (darkTone) GLES20.glUniform3f(uOpaque, 0.07f, 0.07f, 0.08f);
         else GLES20.glUniform3f(uOpaque, 0.97f, 0.97f, 0.98f);
         GLES20.glUniform1f(uIor, st.ior);
         // 像素单位时直接就是 px；否则按面板高度的百分比换算（水印用这条）

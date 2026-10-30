@@ -132,6 +132,9 @@ class ControlPanel {
                 v -> st.font = new String[]{"sans", "condensed", "serif", "mono"}[v],
                 () -> fontIndex(st.font));
 
+        label(c2, "文字颜色");
+        hueRow(c2);
+
         label(c2, "文字材质");
         segmented(c2, new String[]{"液态玻璃", "磨砂玻璃", "不透明"},
                 () -> matIndex(st.nameMaterial),
@@ -191,6 +194,14 @@ class ControlPanel {
                 () -> whiteSlider(st.whitePct),
                 v -> st.whitePct = whiteValue(v),
                 p -> Math.round(whiteValue(p)) + "%");
+        label(adv, "磨砂色调");
+        segmented(adv, new String[]{"自动", "深色", "浅色"},
+                () -> Math.max(0, Math.min(2, st.frostTone)),
+                v -> st.frostTone = v,
+                () -> Math.max(0, Math.min(2, st.frostTone)));
+        hint(adv, "「磨砂」预设的实色：自动跟着背景明暗走（对应系统深/浅色外观），"
+                + "也可以强制成深色玻璃或浅色玻璃。");
+
         slider(adv, "细分", 8, 128, 4, () -> st.segments, v -> st.segments = Math.round(v),
                 p -> String.valueOf(Math.round(p)));
         hint(adv, "折射率固定 1.45~1.50 就够；透射率是「混入环境色的比例」，调低会变成一块发白的色板；"
@@ -546,6 +557,39 @@ class ControlPanel {
             head.setText((show ? "\u25be  " : "\u25b8  ") + title);
         });
         return box;
+    }
+
+    /** 色相轮盘 + 状态说明 */
+    private void hueRow(LinearLayout parent) {
+        LinearLayout row = new LinearLayout(act);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(6), 0, dp(2));
+
+        final HueWheelView wheel = new HueWheelView(act);
+        wheel.setHue(st.textHue);
+        LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(dp(72), dp(72));
+        wlp.rightMargin = dp(14);
+        row.addView(wheel, wlp);
+
+        final TextView info = new TextView(act);
+        info.setTextSize(11.5f);
+        info.setTextColor(0xB3FFFFFF);
+        info.setLineSpacing(dp(2), 1f);
+        row.addView(info, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final Runnable sync = () -> info.setText(st.textHue < 0
+                ? "自动：白字 / 深色字随背景明暗切换\n点轮盘外圈选色相，点中心回到自动"
+                : "色相 " + Math.round(st.textHue) + "°\n点中心可回到自动");
+        sync.run();
+
+        wheel.setOnHue(h -> {
+            st.textHue = h;
+            sync.run();
+            onChange.run();
+        });
+        parent.addView(row, matchWrap());
     }
 
     private void label(LinearLayout parent, String text) {
