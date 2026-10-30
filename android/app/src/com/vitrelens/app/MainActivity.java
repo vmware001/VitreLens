@@ -113,6 +113,8 @@ public class MainActivity extends Activity {
 
         preview = findViewById(R.id.preview);
         backdrop = findViewById(R.id.backdrop);
+        // 上次运行留下的高质量预览直接删掉，避免占缓存
+        clearHqPreview();
         filmRow = findViewById(R.id.filmRow);
         filmstrip = findViewById(R.id.filmstrip);
         hint = findViewById(R.id.hint);
@@ -316,6 +318,38 @@ public class MainActivity extends Activity {
 
     /* ── 实况照片的动态预览 ── */
 
+    /** 高质量预览：缓存文件 + 生成时的样式签名 */
+    private File hqFile;
+    private String hqSig;
+
+    /** 样式签名：任何一个会影响水印外观的参数变了，缓存就作废 */
+    private String styleSig() {
+        WatermarkPainter.Style s = style;
+        return s.name + "|" + s.subtitle + "|" + s.params + "|" + s.meta + "|" + s.brand
+                + "|" + s.showSubtitle + s.showBrand + s.showParams + s.showMeta
+                + "|" + s.widthPct + "|" + s.gapPct + "|" + s.glassHeightPct
+                + "|" + s.nameSize + "|" + s.metaSize + "|" + s.font + "|" + s.nameMaterial
+                + "|" + s.italic + "|" + s.align + "|" + s.posXPct
+                + "|" + s.logoPosPct + "|" + s.logoSizePct + "|" + s.logoRight
+                + "|" + s.videoGapShift + "|" + s.videoWidthScale
+                + "|" + s.roughPct + "|" + s.thicknessPct + "|" + s.depthPct + "|" + s.ior
+                + "|" + s.reflPct + "|" + s.transPct + "|" + s.whitePct + "|" + s.dispPct
+                + "|" + s.edgePct + "|" + s.segments + "|" + s.textHue + "|" + s.textSat
+                + "|" + s.textVal + "|" + s.frostTone + "|" + s.tintOn;
+    }
+
+    /** 换图 / 退出应用时把缓存删掉 */
+    private void clearHqPreview() {
+        hqSig = null;
+        try {
+            File f = new File(getCacheDir(), "vl_hq.mp4");
+            if (f.exists() && !f.delete()) {
+                Log.w("VitreLens", "高质量预览缓存没删掉：" + f);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void toggleVideo() {
         if (videoPlaying) {
             stopVideo();
@@ -325,9 +359,56 @@ public class MainActivity extends Activity {
             toast("这张照片没有动态部分");
             return;
         }
+
+        // 高质量预览：走和导出完全相同的 GL 合成（真的玻璃折射），生成一次后缓存，
+        // 样式没变就直接播缓存。换图 / 退出应用会删掉。
+        final String sig = styleSig();
+        hqFile = new File(getCacheDir(), "vl_hq.mp4");
+        if (hqFile.exists() && sig.equals(hqSig)) {
+            startPlayer(hqFile, true);
+            return;
+        }
+        buildHighQualityPreview(sig);
+    }
+
+    /** 用导出那条路生成一份带真玻璃水印的短视频，作为高质量预览 */
+    private void buildHighQualityPreview(final String sig) {
         final Uri uri = srcUri;
         final long skip = meta.eoiEnd + meta.trailerLeadLength;
         final long len = meta.trailerVideoLength;
+        final ProgressDialog pd = ProgressDialog.show(this, "", "正在生成高质量预览…", true, false);
+        new Thread(() -> {
+            boolean ok = false;
+            try {
+                File src = new File(getCacheDir(), "vl_preview.mp4");
+                InputStream in = getContentResolver().openInputStream(uri);
+                if (in == null) throw new RuntimeException("无法打开源文件");
+                try {
+                    VideoWatermark.extractRange(in, skip, len, src);
+                } finally {
+                    in.close();
+                }
+                VideoWatermark.transcode(this, src, hqFile, composer, style.copy(),
+                        (frame, total, stage) -> { });
+                ok = hqFile.exists() && hqFile.length() > 1024;
+            } catch (Throwable t) {
+                Log.w("VitreLens", "高质量预览生成失败，回退普通预览", t);
+            }
+            final boolean good = ok;
+            runOnUiThread(() -> {
+                if (pd != null && pd.isShowing()) pd.dismiss();
+                if (good) {
+                    hqSig = sig;
+                    startPlayer(hqFile, true);
+                } else {
+                    startPlainPreview(uri, skip, len);
+                }
+            });
+        }).start();
+    }
+
+    /** 回退：直接播原视频，水印用 Canvas 近似 */
+    private void startPlainPreview(final Uri uri, final long skip, final long len) {
         toast("正在准备动态部分…");
         new Thread(() -> {
             try {
@@ -339,18 +420,19 @@ public class MainActivity extends Activity {
                 } finally {
                     in.close();
                 }
-                runOnUiThread(() -> startPlayer(tmp));
+                runOnUiThread(() -> startPlayer(tmp, false));
             } catch (Throwable t) {
                 runOnUiThread(() -> toast("读取动态部分失败：" + t.getMessage()));
             }
         }).start();
     }
 
-    private void startPlayer(File f) {
+    private void startPlayer(File f, boolean baked) {
         try {
             stopVideo();
             videoView.setVisibility(View.VISIBLE);
-            videoMark.setVisibility(View.VISIBLE);
+            // 高质量预览里水印已经烘焙进画面了，不要再叠 Canvas 那层
+            videoMark.setVisibility(baked ? View.GONE : View.VISIBLE);
             preview.setVisibility(View.GONE);
             hint.setVisibility(View.GONE);
             videoMark.setStyle(style);
@@ -876,6 +958,8 @@ public class MainActivity extends Activity {
                     applyUiGlass();
                     fillFromMeta();
                     if (pd != null) pd.dismiss();
+                    // 换了照片，上一张的高质量预览就没用了
+                    clearHqPreview();
                     buildFilmstrip();
                     schedulePreview();
                     if (afterLoad != null) {
@@ -910,7 +994,8 @@ public class MainActivity extends Activity {
         int[] px = new int[w * h];
         small.getPixels(px, 0, w, 0, 0, w, h);
         // 3 次盒式宽度 2r+1 时 sigma ≈ r，这里取 4 左右
-        Blur.boxBlur(px, w, h, Math.max(3, Math.round(w / 120f)));
+        // 很轻的一层：只要把照片的锐度压下去，玻璃面板自己会再做折射
+        Blur.boxBlur(px, w, h, Math.max(2, Math.round(w / 260f)));
 
         Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         out.setPixels(px, 0, w, 0, 0, w, h);
@@ -1251,7 +1336,9 @@ public class MainActivity extends Activity {
         s.pixelUnits = true;
         s.depthPct = 14f;
         s.thicknessPct = 10f;
-        s.roughPct = 52f;
+        // 不再二次模糊：背景本身已经是模糊过的，面板再糊一遍会比周围更糊
+        // （而且模糊半径是按渲染块宽度算的，左栏和右面板本来就会差出好几倍）。
+        s.roughPct = 0f;
         s.dispPct = 5f;
         s.reflPct = 22f;
         s.transPct = 97f;
