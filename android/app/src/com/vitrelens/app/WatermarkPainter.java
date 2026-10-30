@@ -255,18 +255,21 @@ class WatermarkPainter {
                 float cx = panelX + baseW / 2f;
                 float cy = panelY + baseH / 2f;
 
-                float wScale = 1f - Math.abs(jsx) * 0.20f;   // 左右都是收窄
-                float hScale = 1f - jsy * 0.22f;             // 往上拉变高、往下拉变矮
-                wScale *= 1f + jp * 0.14f;                   // 长按：鼓起
-                hScale *= 1f + jp * 0.26f;
-                panelW = baseW * Math.max(0.72f, wScale);
-                panelH = baseH * Math.max(0.80f, hScale);
+                // 像拉一块橡皮：左右拖 → 变长变细，上下拖 → 变短变宽，**总面积守恒**。
+                // 所以只算一个横向拉伸因子，纵向取它的倒数。
+                float ax = Math.abs(jsx), ay = Math.abs(jsy);
+                float stretch = Math.max(0.55f, Math.min(1.9f,
+                        1f + ax * 0.24f - ay * 0.22f));
+                float wScale = stretch * (1f + jp * 0.14f);       // 长按：鼓起
+                float hScale = (1f / stretch) * (1f + jp * 0.26f);
+                panelW = baseW * wScale;
+                panelH = baseH * hScale;
 
-                // 收窄之后两侧才有余量，位移只用到这部分，不会把文字推出画幅
-                float slack = Math.max(0f, (W - panelW) / 2f) * 0.9f;
-                float push = Math.max(-slack, Math.min(slack, jsx * baseW * 0.10f));
-                cx += push;
-                cy += Math.max(-slack, Math.min(slack, jsy * baseH * 0.30f));
+                // 位移只用到剩余空隙：拉伸时一侧本来就会顶到边
+                float slackX = Math.max(0f, (W - panelW) / 2f) * 0.9f;
+                float slackY = Math.max(0f, (H - panelH) / 2f) * 0.9f;
+                cx += Math.max(-slackX, Math.min(slackX, jsx * baseW * 0.06f));
+                cy += Math.max(-slackY, Math.min(slackY, jsy * baseH * 0.18f));
                 panelX = cx - panelW / 2f;
                 panelY = cy - panelH / 2f;
             }
