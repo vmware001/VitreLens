@@ -107,7 +107,7 @@ class ControlPanel {
                 () -> alignIndex(st.align));
 
         slider(c2, "水印宽度", 50, 100, 1, () -> st.widthPct, v -> st.widthPct = v, p -> (int) p + "%");
-        slider(c2, "玻璃高度", 100, 300, 1, () -> st.glassHeightPct, v -> st.glassHeightPct = v,
+        slider(c2, "水印高度", 50, 300, 1, () -> st.glassHeightPct, v -> st.glassHeightPct = v,
                 p -> Math.round(p) + "%");
         slider(c2, "距底高度", 0, 50, 0.1f, () -> st.gapPct, v -> st.gapPct = v,
                 p -> String.format(Locale.US, "%.1f%%", p));

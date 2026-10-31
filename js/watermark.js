@@ -147,7 +147,8 @@
         continue;
       }
 
-      var panelH = Math.max(leftH, rightH, logoW ? logoH : 0) + padY * 2;
+      var contentH = Math.max(leftH, rightH, logoW ? logoH : 0);
+      var panelH = contentH * ((st.glassHeightPct === undefined ? 100 : st.glassHeightPct) / 100) + padY * 2;
       var panelX = margin;
       if (st.align === 'center') panelX = (W - panelW) / 2;
       else if (st.align === 'right') panelX = W - margin - panelW;

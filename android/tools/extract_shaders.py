@@ -39,9 +39,18 @@ def collect(lines, start_marker):
 def main():
     if not os.path.isfile(SRC):
         sys.exit('找不到 %s' % SRC)
-    lines = open(SRC, encoding='utf-8').read().splitlines()
-    vert = collect(lines, 'var VERT = [')
-    frag = collect(lines, 'var FRAG = [')
+    source = open(SRC, encoding='utf-8').read()
+    lines = source.splitlines()
+    # 新版网页使用 JS 模板字符串；旧版是单引号数组。两种格式都支持，
+    # 这样网页与 Android 可以继续共享同一份 GLSL，而不必复制维护。
+    vm = re.search(r"var\s+VERT\s*=\s*'([^']*)'\s*;", source)
+    fm = re.search(r'var\s+FRAG\s*=\s*`([\s\S]*?)`\s*;', source)
+    if vm and fm:
+        vert = [vm.group(1)]
+        frag = fm.group(1).splitlines()
+    else:
+        vert = collect(lines, 'var VERT = [')
+        frag = collect(lines, 'var FRAG = [')
     if not vert or not frag:
         sys.exit('解析着色器数组失败')
 

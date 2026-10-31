@@ -24,7 +24,7 @@
 
   var DEFAULTS = {
     showSubtitle: true, showBrand: true, showParams: true, showMeta: true,
-    align: 'center', widthPct: 92, nameSize: 24, metaSize: 12.5, bottomGap: 3.8,
+    align: 'center', widthPct: 92, glassHeightPct: 100, nameSize: 24, metaSize: 12.5, bottomGap: 3.8,
     font: 'sans', italic: false, nameMaterial: 'liquid', viewMode: 'detail',
     logoRight: true, logoPosPct: 100, textColor: '',
     ior: 1.46, radius: 100, bevel: 24, edgeWidth: 36, frost: 20, chroma: 6,
@@ -41,8 +41,8 @@
       spec: 28, rim: 28, trans: 98, shadow: 18, white: 0, warp: 0, edge: 140, segments: 128, frostTone: 0 },
     clear: { ior: 1.46, radius: 100, bevel: 28, edgeWidth: 44, frost: 4, chroma: 8,
       spec: 32, rim: 32, trans: 100, shadow: 14, white: 0, warp: 0, edge: 160, segments: 128, frostTone: 0 },
-    frost: { ior: 1.40, radius: 100, bevel: 30, edgeWidth: 44, frost: 76, chroma: 6,
-      spec: 24, rim: 30, trans: 86, shadow: 20, white: 30, warp: 0, edge: 110, segments: 128, frostTone: 0 },
+    frost: { ior: 1.40, radius: 100, bevel: 30, edgeWidth: 44, frost: 50, chroma: 6,
+      spec: 24, rim: 30, trans: 86, shadow: 20, white: 15, warp: 0, edge: 110, segments: 128, frostTone: 0 },
     thick: { ior: 1.72, radius: 100, bevel: 72, edgeWidth: 88, frost: 8, chroma: 46,
       spec: 82, rim: 100, trans: 100, shadow: 58, white: 0, warp: 130, edge: 60, segments: 128, frostTone: 0 }
   };
