@@ -343,9 +343,12 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     private File hqFile;
     private String hqSig;
 
-    /** 样式签名：任何一个会影响水印外观的参数变了，缓存就作废 */
+    /** 样式签名：任何一个会影响水印外观或导出质量的参数变了，缓存就作废 */
     private String styleSig() {
-        WatermarkPainter.Style s = style;
+        return styleSig(style);
+    }
+
+    private String styleSig(WatermarkPainter.Style s) {
         return s.name + "|" + s.subtitle + "|" + s.params + "|" + s.meta + "|" + s.brand
                 + "|" + s.showSubtitle + s.showBrand + s.showParams + s.showMeta
                 + "|" + s.widthPct + "|" + s.gapPct + "|" + s.glassHeightPct
@@ -356,7 +359,8 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 + "|" + s.roughPct + "|" + s.thicknessPct + "|" + s.depthPct + "|" + s.ior
                 + "|" + s.reflPct + "|" + s.transPct + "|" + s.whitePct + "|" + s.dispPct
                 + "|" + s.edgePct + "|" + s.segments + "|" + s.textHue + "|" + s.textSat
-                + "|" + s.textVal + "|" + s.frostTone + "|" + s.tintOn;
+                + "|" + s.textVal + "|" + s.frostTone + "|" + s.tintOn
+                + "|" + (panel != null && panel.keepOriginalVideo);
     }
 
     /** 换图 / 退出应用时把缓存删掉 */
@@ -2006,10 +2010,32 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     /* ── 动态照片：视频打水印 ── */
 
     private java.io.File buildWatermarkedVideo(WatermarkPainter.Style st, ProgressDialog pd) throws Exception {
-        java.io.File tmpIn = new java.io.File(getCacheDir(), "vl_src.mp4");
         java.io.File tmpOut = new java.io.File(getCacheDir(), "vl_out.mp4");
         if (tmpOut.exists() && !tmpOut.delete()) throw new RuntimeException("清不掉上次的临时文件");
 
+        // 高质量预览与导出走的是同一个 transcodeWithPolicy。签名一致时，
+        // 直接复制已编码结果可避免第二次编码（也避免再次损失质量）。
+        if (hqFile != null && hqFile.isFile() && hqFile.length() > 1024
+                && styleSig(st).equals(hqSig)) {
+            setPdMessage(pd, "复用高质量预览视频…");
+            InputStream hin = new java.io.FileInputStream(hqFile);
+            OutputStream hout = new java.io.FileOutputStream(tmpOut);
+            try {
+                byte[] buf = new byte[1024 * 1024];
+                int n;
+                while ((n = hin.read(buf)) >= 0) {
+                    if (n > 0) hout.write(buf, 0, n);
+                }
+                hout.flush();
+            } finally {
+                hin.close();
+                hout.close();
+            }
+            Log.i("VitreLens", "复用高质量预览视频，跳过再次编码");
+            return tmpOut;
+        }
+
+        java.io.File tmpIn = new java.io.File(getCacheDir(), "vl_src.mp4");
         setPdMessage(pd, "正在取出视频段…");
         InputStream in = getContentResolver().openInputStream(srcUri);
         if (in == null) throw new RuntimeException("打不开原图");
