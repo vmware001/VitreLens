@@ -55,6 +55,15 @@ class VideoWatermark {
      */
     static long transcode(Context ctx, File in, File out, Composer composer,
                           WatermarkPainter.Style st, Progress cb) throws Exception {
+        return transcode(ctx, in, out, composer, st, cb, 0);
+    }
+
+    /**
+     * @param maxDimension 输出最长边上限；0 表示优先保持原尺寸。
+     *        部分设备 configure 接受 8K、真正编码时才失败，调用方可据此降级重试。
+     */
+    static long transcode(Context ctx, File in, File out, Composer composer,
+                          WatermarkPainter.Style st, Progress cb, int maxDimension) throws Exception {
         MediaExtractor ex = new MediaExtractor();
         ex.setDataSource(in.getAbsolutePath());
 
@@ -82,6 +91,11 @@ class VideoWatermark {
         boolean swapped = (rotation == 90 || rotation == 270);
         int outW = align2(swapped ? srcH : srcW);
         int outH = align2(swapped ? srcW : srcH);
+        if (maxDimension > 0) {
+            float k = Math.min(1f, maxDimension / (float) Math.max(outW, outH));
+            outW = align2(Math.round(outW * k));
+            outH = align2(Math.round(outH * k));
+        }
 
         // 源视频的真实色彩特性。之前一律按 BT.601 + SDR 处理，
         // 遇到 BT.2020/HLG 的源（OPPO 的动态照片就是）会整体偏色发灰，而且不会报错。

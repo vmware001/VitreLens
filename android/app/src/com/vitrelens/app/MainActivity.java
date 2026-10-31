@@ -1738,12 +1738,31 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
             Uri outUri = null;
             File tmp = new File(getCacheDir(), "vl_video_export.mp4");
             try {
-                VideoWatermark.transcode(this, clip.file, tmp, composer, st,
-                        (frame, total, stage) -> {
-                            if (frame % 3 == 0 || frame >= total) {
-                                setPdMessage(pd, stage + " " + frame + "/" + total);
-                            }
-                        });
+                // 有些设备在 configure 时接受 8K，开始编码后才报错；这种运行时失败
+                // 只能在新建编码器后重试。依次尝试原尺寸、最长边 1280、最长边 864。
+                final int[] limits = {0, 1280, 864};
+                Throwable transcodeError = null;
+                boolean encoded = false;
+                for (int attempt = 0; attempt < limits.length && !encoded; attempt++) {
+                    try {
+                        if (attempt > 0) {
+                            setPdMessage(pd, "当前设备无法按上一档编码，正在降低分辨率重试…");
+                            if (tmp.exists()) tmp.delete();
+                        }
+                        final int limit = limits[attempt];
+                        VideoWatermark.transcode(this, clip.file, tmp, composer, st,
+                                (frame, total, stage) -> {
+                                    if (frame % 3 == 0 || frame >= total) {
+                                        setPdMessage(pd, stage + " " + frame + "/" + total);
+                                    }
+                                }, limit);
+                        encoded = true;
+                    } catch (Throwable t) {
+                        transcodeError = t;
+                        Log.w("VitreLens", "视频编码档位 " + limits[attempt] + " 失败", t);
+                    }
+                }
+                if (!encoded) throw new Exception("视频编码失败", transcodeError);
 
                 String name = "VL_VIDEO_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
                         .format(new Date()) + ".mp4";
