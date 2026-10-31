@@ -20,6 +20,14 @@ class Composer {
         return glass != null;
     }
 
+    String backendLabel() {
+        return glass == null ? "无 GL 渲染" : glass.backendLabel();
+    }
+
+    String backendDetail() {
+        return glass == null ? "none" : glass.backendDetail();
+    }
+
     /** base 必须可变；结果为 base 本身 */
     Bitmap composeOn(Bitmap base, int W, int H, WatermarkPainter.Style st) {
         return composeOn(base, W, H, st, 0f, 0f, 0f);

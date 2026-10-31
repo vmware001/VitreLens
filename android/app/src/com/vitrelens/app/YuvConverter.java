@@ -242,4 +242,128 @@ final class YuvConverter {
             }
         }
     }
+
+    /**
+     * 解码后的直接降采样：不创建完整源尺寸 ARGB。
+     * Y 用双线性，U/V 用四点平均；颜色矩阵与 HDR LUT 和原路径完全一致。
+     */
+    boolean toBitmapScaled(Image img, Bitmap bmp, int[] scratch,
+                           int srcW, int srcH, int dstW, int dstH) {
+        Image.Plane[] planes = img.getPlanes();
+        if (planes == null || planes.length < 3) return false;
+        if (img.getWidth() != srcW || img.getHeight() != srcH) return false;
+        if (dstW <= 0 || dstH <= 0) return false;
+
+        ByteBuffer yB = planes[0].getBuffer(), uB = planes[1].getBuffer(), vB = planes[2].getBuffer();
+        int yRow = planes[0].getRowStride(), yPix = planes[0].getPixelStride();
+        int uRow = planes[1].getRowStride(), uPix = planes[1].getPixelStride();
+        int vRow = planes[2].getRowStride(), vPix = planes[2].getPixelStride();
+
+        int[] x0 = new int[dstW], x1 = new int[dstW], fx = new int[dstW];
+        for (int x = 0; x < dstW; x++) {
+            float cx = (x + 0.5f) * srcW / dstW - 0.5f;
+            int a = (int) Math.floor(cx);
+            float f = cx - a;
+            x0[x] = Math.max(0, Math.min(srcW - 1, a));
+            x1[x] = Math.max(0, Math.min(srcW - 1, a + 1));
+            fx[x] = Math.max(0, Math.min(1024, Math.round(f * 1024)));
+        }
+
+        int workers = dstW * dstH >= 500000 ? Math.max(2, Math.min(4,
+                Runtime.getRuntime().availableProcessors())) : 1;
+        if (workers == 1) {
+            convertRowsScaled(yB, uB, vB, yRow, yPix, uRow, uPix, vRow, vPix,
+                    scratch, srcW, srcH, dstW, dstH, 0, dstH, x0, x1, fx);
+        } else {
+            final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(workers);
+            final java.util.concurrent.atomic.AtomicBoolean ok = new java.util.concurrent.atomic.AtomicBoolean(true);
+            for (int i = 0; i < workers; i++) {
+                final int from = dstH * i / workers, to = dstH * (i + 1) / workers;
+                final ByteBuffer fy = yB.duplicate(), fu = uB.duplicate(), fv = vB.duplicate();
+                CPU_POOL.execute(() -> {
+                    try {
+                        convertRowsScaled(fy, fu, fv, yRow, yPix, uRow, uPix, vRow, vPix,
+                                scratch, srcW, srcH, dstW, dstH, from, to, x0, x1, fx);
+                    } catch (Throwable t) {
+                        ok.set(false);
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+            try {
+                done.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            if (!ok.get()) return false;
+        }
+        bmp.setPixels(scratch, 0, dstW, 0, 0, dstW, dstH);
+        return true;
+    }
+
+    private static void readRow(ByteBuffer b, int stride, int row, byte[] line, int len) {
+        b.position(row * stride);
+        int n = Math.min(len, b.remaining());
+        b.get(line, 0, n);
+    }
+
+    private void convertRowsScaled(ByteBuffer yB, ByteBuffer uB, ByteBuffer vB,
+                                   int yRow, int yPix, int uRow, int uPix, int vRow, int vPix,
+                                   int[] scratch, int srcW, int srcH, int dstW, int dstH,
+                                   int fromY, int toY, int[] x0, int[] x1, int[] fx) {
+        int cw = (srcW + 1) / 2;
+        int yLen = srcW * yPix, cLen = cw * Math.max(uPix, vPix);
+        byte[] y0 = new byte[yLen], y1 = new byte[yLen];
+        byte[] u0 = new byte[cLen], u1 = new byte[cLen];
+        byte[] v0 = new byte[cLen], v1 = new byte[cLen];
+        final byte[] lut = this.lut;
+
+        for (int y = fromY; y < toY; y++) {
+            float cy = (y + 0.5f) * srcH / dstH - 0.5f;
+            int ay = (int) Math.floor(cy);
+            float fyf = cy - ay;
+            int sy0 = Math.max(0, Math.min(srcH - 1, ay));
+            int sy1 = Math.max(0, Math.min(srcH - 1, ay + 1));
+            int fy = Math.max(0, Math.min(1024, Math.round(fyf * 1024)));
+            readRow(yB, yRow, sy0, y0, yLen);
+            readRow(yB, yRow, sy1, y1, yLen);
+            readRow(uB, uRow, sy0 >> 1, u0, cLen);
+            readRow(uB, uRow, sy1 >> 1, u1, cLen);
+            readRow(vB, vRow, sy0 >> 1, v0, cLen);
+            readRow(vB, vRow, sy1 >> 1, v1, cLen);
+
+            int base = y * dstW;
+            for (int x = 0; x < dstW; x++) {
+                int xa = x0[x] * yPix, xb = x1[x] * yPix, f = fx[x];
+                int y00 = y0[xa] & 0xFF, y01 = y0[xb] & 0xFF;
+                int y10 = y1[xa] & 0xFF, y11 = y1[xb] & 0xFF;
+                int yt = (y00 * (1024 - f) + y01 * f + 512) >> 10;
+                int yb = (y10 * (1024 - f) + y11 * f + 512) >> 10;
+                int Y = (yt * (1024 - fy) + yb * fy + 512) >> 10;
+
+                int ca = (x0[x] >> 1) * uPix, cb = (x1[x] >> 1) * uPix;
+                int va = (x0[x] >> 1) * vPix, vb = (x1[x] >> 1) * vPix;
+                int U = ((u0[ca] & 0xFF) + (u0[cb] & 0xFF)
+                        + (u1[ca] & 0xFF) + (u1[cb] & 0xFF) + 2) >> 2;
+                int V = ((v0[va] & 0xFF) + (v0[vb] & 0xFF)
+                        + (v1[va] & 0xFF) + (v1[vb] & 0xFF) + 2) >> 2;
+
+                int c = Y - yOffset, d = U - 128, e = V - 128;
+                int r = (yScale * c + rCr * e + 512) >> 10;
+                int g = (yScale * c - gCb * d - gCr * e + 512) >> 10;
+                int b = (yScale * c + bCb * d + 512) >> 10;
+                if (r < 0) r = 0; else if (r > 255) r = 255;
+                if (g < 0) g = 0; else if (g > 255) g = 255;
+                if (b < 0) b = 0; else if (b > 255) b = 255;
+                if (lut != null) {
+                    r = lut[r] & 0xFF;
+                    g = lut[g] & 0xFF;
+                    b = lut[b] & 0xFF;
+                }
+                scratch[base + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
 }

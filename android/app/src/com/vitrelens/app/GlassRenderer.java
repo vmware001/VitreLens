@@ -33,6 +33,7 @@ class GlassRenderer {
     private int aPos;
     private int fbo, texPhoto, texBlur, texBlur2;
     private int maxTex = 4096;
+    private String rendererName = "unknown";
     private FloatBuffer quad;
 
     private Bitmap blurBitmap, blurBitmap2;
@@ -49,6 +50,7 @@ class GlassRenderer {
             int[] max = new int[1];
             GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, max, 0);
             maxTex = Math.min(8192, max[0] > 0 ? max[0] : 4096);
+            rendererName = GLES20.glGetString(GLES20.GL_RENDERER);
 
             float[] q = {-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1};
             quad = ByteBuffer.allocateDirect(q.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
@@ -56,6 +58,17 @@ class GlassRenderer {
         } finally {
             releaseCurrent();
         }
+    }
+
+    String backendLabel() {
+        String n = rendererName == null ? "" : rendererName.toLowerCase(java.util.Locale.US);
+        boolean software = n.contains("llvmpipe") || n.contains("softpipe")
+                || n.contains("software") || n.contains("swiftshader");
+        return software ? "CPU 渲染" : "GPU 渲染";
+    }
+
+    String backendDetail() {
+        return rendererName + "（" + backendLabel() + "）";
     }
 
     private static String readRaw(MainActivity act, int id) throws Exception {

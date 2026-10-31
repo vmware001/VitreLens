@@ -1814,6 +1814,8 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 ui.post(() -> {
                     pd.dismiss();
                     toast("已导出视频 → Movies/VitreLens"
+                            + (VideoWatermark.lastBackendNote == null ? "" : "\n" + VideoWatermark.lastBackendNote)
+                            + (VideoWatermark.lastTimingNote == null ? "" : "\n" + VideoWatermark.lastTimingNote)
                             + (VideoWatermark.lastColorNote == null ? "" : "\n" + VideoWatermark.lastColorNote));
                 });
             } catch (Throwable t) {

@@ -38,6 +38,9 @@ class VideoWatermark {
 
     /** 最近一次转码的色彩处理结论，供导出提示使用（null 表示还没跑过） */
     static volatile String lastColorNote;
+    /** 最近一次转码的后端与分阶段耗时，供进度框和完成提示显示 */
+    static volatile String lastBackendNote;
+    static volatile String lastTimingNote;
 
     interface Progress {
         void onProgress(int frame, int total, String stage);
@@ -219,15 +222,26 @@ class VideoWatermark {
         MediaCodec dec = openDecoder(vMime, vf, codecMode == 1);
         dec.start();
 
-        Bitmap frameRaw = Bitmap.createBitmap(srcW, srcH, Bitmap.Config.ARGB_8888);
         boolean resizeFrame = rotation != 0 || outW != srcW || outH != srcH;
+        // 旋转前目标尺寸。降档时直接在 YUV 阶段降采样，避免每帧生成完整 8K ARGB。
+        int convertW = resizeFrame ? (swapped ? outH : outW) : srcW;
+        int convertH = resizeFrame ? (swapped ? outW : outH) : srcH;
+        Bitmap frameRaw = Bitmap.createBitmap(convertW, convertH, Bitmap.Config.ARGB_8888);
         Bitmap frameWork = resizeFrame ? Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
                 : frameRaw;
-        int[] rowPixels = new int[srcW * srcH];
+        int[] rowPixels = new int[convertW * convertH];
         Canvas workCanvas = resizeFrame ? new Canvas(frameWork) : null;
         Paint blitPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
 
         SurfaceBlitter blitter = new SurfaceBlitter(encSurface, outW, outH);
+        lastBackendNote = (softwareCodec(dec.getName()) ? "CPU 解码" : "GPU 解码")
+                + " · " + composer.backendLabel()
+                + " · " + (softwareCodec(enc.getName()) ? "CPU 编码" : "GPU 编码");
+        Log.i(TAG, "运行后端：" + lastBackendNote + "｜解码器=" + dec.getName()
+                + "，GL=" + composer.backendDetail() + "，编码器=" + enc.getName());
+        if (cb != null) cb.onProgress(0, totalFrames, lastBackendNote);
+        long transcodeStartNs = System.nanoTime();
+        long yuvNs = 0, composeNs = 0, blitNs = 0;
         List<Sample> video = new ArrayList<Sample>();
         MediaFormat encFmt = null;
         int done = 0;
@@ -290,11 +304,18 @@ class VideoWatermark {
                         int nPlanes = -1;
                         if (img != null) {
                             nPlanes = img.getPlanes() == null ? 0 : img.getPlanes().length;
+                            long yuvStart = System.nanoTime();
                             try {
-                                ok.v = yuv.toBitmap(img, frameRaw, rowPixels, srcW, srcH);
+                                if (convertW == srcW && convertH == srcH) {
+                                    ok.v = yuv.toBitmap(img, frameRaw, rowPixels, srcW, srcH);
+                                } else {
+                                    ok.v = yuv.toBitmapScaled(img, frameRaw, rowPixels,
+                                            srcW, srcH, convertW, convertH);
+                                }
                             } finally {
                                 img.close();
                             }
+                            yuvNs += System.nanoTime() - yuvStart;
                         }
                         if (ok.v) {
                             Bitmap work = frameRaw;
@@ -303,22 +324,26 @@ class VideoWatermark {
                                 workCanvas.save();
                                 workCanvas.translate(outW / 2f, outH / 2f);
                                 workCanvas.rotate(rotation);
-                                float rw = swapped ? srcH : srcW;
-                                float rh = swapped ? srcW : srcH;
+                                float rw = swapped ? convertH : convertW;
+                                float rh = swapped ? convertW : convertH;
                                 float fit = Math.min(outW / rw, outH / rh);
                                 workCanvas.scale(fit, fit);
-                                workCanvas.translate(-srcW / 2f, -srcH / 2f);
+                                workCanvas.translate(-convertW / 2f, -convertH / 2f);
                                 workCanvas.drawBitmap(frameRaw, 0, 0, blitPaint);
                                 workCanvas.restore();
                                 work = frameWork;
                             }
                             // 水印（和照片导出完全同一套逻辑）
+                            long composeStart = System.nanoTime();
                             composer.composeOn(work, outW, outH, vst);
+                            composeNs += System.nanoTime() - composeStart;
+                            long blitStart = System.nanoTime();
                             blitter.draw(work, pts);
+                            blitNs += System.nanoTime() - blitStart;
                             lastRenderedPts = pts;
                             done++;
                             if (cb != null && (done % 3 == 0 || done == totalFrames)) {
-                                cb.onProgress(done, totalFrames, "正在给视频加水印");
+                                cb.onProgress(done, totalFrames, lastBackendNote + " · 加水印");
                             }
                         }
                     }
@@ -328,7 +353,7 @@ class VideoWatermark {
                 encFmt = drain(enc, video, encFmt);
             }
 
-            if (cb != null) cb.onProgress(totalFrames, totalFrames, "收尾编码");
+            if (cb != null) cb.onProgress(totalFrames, totalFrames, lastBackendNote + " · 收尾编码");
             enc.signalEndOfInputStream();
             boolean encDone = false;
             int eosGuard = 0;
@@ -458,6 +483,11 @@ class VideoWatermark {
                 : (hdrOut
                     ? "视频 " + yuv.label + " → 保留 HDR（HEVC / HLG）"
                     : "视频 " + yuv.label + " → 已色调映射为 SDR（BT.709）");
+        lastTimingNote = String.format(java.util.Locale.US,
+                "总耗时 %.1fs｜YUV %.1fs｜玻璃 %.1fs｜编码上传 %.1fs",
+                (System.nanoTime() - transcodeStartNs) / 1e9,
+                yuvNs / 1e9, composeNs / 1e9, blitNs / 1e9);
+        Log.i(TAG, "转码性能：" + lastTimingNote);
         Log.i(TAG, "MP4 封装完成：" + out.length() + " 字节，" + lastColorNote);
         return out.length();
     }
