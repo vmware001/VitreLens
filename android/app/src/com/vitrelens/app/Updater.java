@@ -219,7 +219,7 @@ final class Updater {
 
     /**
      * 当前安装的是不是「本地版」——含官方品牌图标的那种。
-     * GitHub 上的发布版不含图标，本地版更新后会退化成内置矢量图形，得提前说明。
+     * GitHub 上的发布版不含图标，本地版更新后将不再显示品牌图标，得提前说明。
      */
     static boolean hasBundledLogos(Context ctx) {
         try {

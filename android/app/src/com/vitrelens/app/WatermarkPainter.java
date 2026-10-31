@@ -6,7 +6,6 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
@@ -601,7 +600,7 @@ class WatermarkPainter {
         return p;
     }
 
-    /** 本地品牌图标（可选）。为空或 1×1 时回退到内置矢量绘制 */
+    /** 用户提供的品牌图标（可选）。为空或 1×1 时不绘制，也不占版式宽度 */
     private static Bitmap[] logoBmps;
     private static float[] logoAspect = {1f, 1f, 1f, 1f, 1f, 1f};
 
@@ -843,7 +842,8 @@ class WatermarkPainter {
             float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
             return Math.min(logoMaxW(brand, h), h * asp);
         }
-        return vectorLogoWidth(brand, h);
+        // 公开版没有用户提供的位图时，不生成品牌图形，也不留下空白占位。
+        return 0;
     }
 
     /**
@@ -902,40 +902,6 @@ class WatermarkPainter {
         c.drawBitmap(b, null, dst, tint(0xFFFFFFFF));
     }
 
-    /** 蔡司外框：顶部与两侧是矩形，底边向内部弯曲，模拟镜片的轮廓而不是普通矩形 */
-    private static void drawLogoFrame(Canvas c, float x, float y, float w, float hh,
-                                      String material, boolean dark) {
-        float pad = hh * 0.24f;
-        RectF r = new RectF(x - pad, y - pad, x + w + pad, y + hh + pad);
-        float rad = Math.min(r.width(), r.height()) * 0.03f;
-        float stroke = Math.max(0.8f, hh * 0.034f);
-        int color;
-        if (dark) {
-            color = "frost".equals(material) ? 0xB3151515
-                    : ("liquid".equals(material) ? 0xD9151515 : 0xE61A1A1A);
-        } else {
-            color = "frost".equals(material) ? 0x9EFFFFFF
-                    : ("liquid".equals(material) ? 0xE6FFFFFF : 0xFFFFFFFF);
-        }
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        p.setStyle(Paint.Style.STROKE);
-        p.setStrokeWidth(stroke);
-        p.setColor(color);
-        Path frame = new Path();
-        frame.moveTo(r.left + rad, r.top);
-        frame.lineTo(r.right - rad, r.top);
-        frame.quadTo(r.right, r.top, r.right, r.top + rad);
-        frame.lineTo(r.right, r.bottom);
-        // 底边中部向框内抬起：这是 ZEISS 标志区别于普通圆角矩形的关键轮廓
-        frame.cubicTo(r.right - r.width() * 0.20f, r.bottom - r.height() * 0.46f,
-                r.left + r.width() * 0.20f, r.bottom - r.height() * 0.46f,
-                r.left, r.bottom);
-        frame.lineTo(r.left, r.top + rad);
-        frame.quadTo(r.left, r.top, r.left + rad, r.top);
-        frame.close();
-        c.drawPath(frame, p);
-    }
-
     private static RectF offset(RectF r, float dx, float dy) {
         return new RectF(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy);
     }
@@ -948,111 +914,15 @@ class WatermarkPainter {
         return p;
     }
 
-    private static float vectorLogoWidth(int brand, float h) {
-        switch (brand) {
-            case 1: return h * 1.02f;   // 徕卡
-            case 2: return h * 0.80f;   // 哈苏（H 形）
-            case 3: return h * 0.80f;   // 哈苏（H 形，独立选项）
-            case 4: return h;           // 蔡司
-            case 5: return h * 1.66f;   // 理光
-            case 6: return h * 0.86f;   // 苹果
-            case 7: return h;           // 自定义
-            default: return 0;
-        }
-    }
-
     private static void drawLogo(Canvas c, int brand, float x, float y, float h,
                                  String material, boolean dark) {
         Bitmap b = logoBitmap(brand);
-        if (b != null) {
-            float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
-            float w = Math.min(logoMaxW(brand, h), h * asp);
-            float hh = w / asp;
-            float top = y + (h - hh) / 2f;
-            drawLogoBitmap(c, b, x, top, w, hh, material, dark);
-            // 蔡司：只留 ZEISS 字样会丢掉标志性的方框，补一圈描边
-            if (brand == 4) drawLogoFrame(c, x, top, w, hh, material, dark);
-            return;
-        }
-        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-        switch (brand) {
-            case 1: {
-                p.setColor(0xFFD6001C);
-                c.drawCircle(x + h / 2f, y + h / 2f, h / 2f, p);
-                Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
-                t.setTypeface(Typeface.create("serif", Typeface.BOLD_ITALIC));
-                t.setTextSize(h * 0.38f);
-                t.setColor(0xFFFFFFFF);
-                t.setTextAlign(Paint.Align.CENTER);
-                c.drawText("Leica", x + h / 2f, y + h * 0.63f, t);
-                break;
-            }
-            case 2:
-            case 3: {
-                p.setColor(0xFFFFFFFF);
-                float bw = h * 0.155f;
-                float w = h * 0.80f;
-                c.save();
-                c.translate(x, y);
-                c.skew(-0.13f, 0);
-                c.drawRect(0, 0, bw, h, p);
-                c.drawRect(w - bw, 0, w, h, p);
-                Path path = new Path();
-                path.moveTo(-bw * 0.05f, h * 0.585f);
-                path.lineTo(w + bw * 0.05f, h * 0.435f);
-                path.lineTo(w + bw * 0.05f, h * 0.59f);
-                path.lineTo(-bw * 0.05f, h * 0.74f);
-                path.close();
-                c.drawPath(path, p);
-                c.restore();
-                break;
-            }
-            case 4: {
-                p.setColor(0xFF0B4EA2);
-                c.drawRoundRect(new RectF(x, y, x + h, y + h), h * 0.13f, h * 0.13f, p);
-                Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
-                t.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-                t.setTextSize(h * 0.225f);
-                t.setColor(0xFFFFFFFF);
-                t.setTextAlign(Paint.Align.CENTER);
-                c.drawText("ZEISS", x + h / 2f, y + h * 0.63f, t);
-                break;
-            }
-            case 5: {
-                Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
-                t.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
-                t.setTextSize(h * 0.44f);
-                t.setLetterSpacing(0.08f);
-                t.setColor(0xFFFFFFFF);
-                c.drawText("RICOH", x, y + h * 0.80f, t);
-                break;
-            }
-            case 6: {
-                // 苹果：两瓣果身 + 上方一片叶子
-                float w = h * 0.86f;
-                Path a = new Path();
-                a.moveTo(x + w * 0.50f, y + h * 0.32f);
-                a.cubicTo(x + w * 0.42f, y + h * 0.22f, x + w * 0.28f, y + h * 0.18f, x + w * 0.18f, y + h * 0.26f);
-                a.cubicTo(x + w * 0.06f, y + h * 0.36f, x + w * 0.05f, y + h * 0.55f, x + w * 0.12f, y + h * 0.70f);
-                a.cubicTo(x + w * 0.19f, y + h * 0.85f, x + w * 0.31f, y + h * 0.95f, x + w * 0.42f, y + h * 0.93f);
-                a.cubicTo(x + w * 0.47f, y + h * 0.92f, x + w * 0.53f, y + h * 0.92f, x + w * 0.58f, y + h * 0.93f);
-                a.cubicTo(x + w * 0.69f, y + h * 0.95f, x + w * 0.81f, y + h * 0.85f, x + w * 0.88f, y + h * 0.70f);
-                a.cubicTo(x + w * 0.95f, y + h * 0.55f, x + w * 0.94f, y + h * 0.36f, x + w * 0.82f, y + h * 0.26f);
-                a.cubicTo(x + w * 0.72f, y + h * 0.18f, x + w * 0.58f, y + h * 0.22f, x + w * 0.50f, y + h * 0.32f);
-                a.close();
-                p.setColor(0xFFFFFFFF);
-                c.drawPath(a, p);
-
-                Path leaf = new Path();
-                leaf.moveTo(x + w * 0.52f, y + h * 0.26f);
-                leaf.cubicTo(x + w * 0.54f, y + h * 0.16f, x + w * 0.62f, y + h * 0.08f, x + w * 0.72f, y + h * 0.06f);
-                leaf.cubicTo(x + w * 0.74f, y + h * 0.16f, x + w * 0.68f, y + h * 0.25f, x + w * 0.58f, y + h * 0.28f);
-                leaf.close();
-                c.drawPath(leaf, p);
-                break;
-            }
-            default:
-                break;
-        }
+        // 公开仓库不内置自绘品牌图形；只有用户提供的位图才会被绘制。
+        if (b == null) return;
+        float asp = brand == 7 ? customAspect : logoAspect[brand - 1];
+        float w = Math.min(logoMaxW(brand, h), h * asp);
+        float hh = w / asp;
+        float top = y + (h - hh) / 2f;
+        drawLogoBitmap(c, b, x, top, w, hh, material, dark);
     }
 }

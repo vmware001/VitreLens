@@ -5,7 +5,7 @@ const crypto = require('crypto');
 
 const ROOT = 'D:/data/code/liquidglass';
 const DEST = 'D:/nginx/html/app/liquidglass';
-const ASSETS = ['css/app.css', 'js/app.js', 'js/exif.js', 'js/glass.js', 'js/logos.js', 'js/watermark.js'];
+const ASSETS = ['css/app.css', 'js/app.js', 'js/exif.js', 'js/glass.js', 'js/brands.js', 'js/watermark.js'];
 
 const h = crypto.createHash('md5');
 ASSETS.forEach((f) => h.update(fs.readFileSync(path.join(ROOT, f))));

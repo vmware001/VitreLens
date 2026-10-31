@@ -577,7 +577,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         m.append("当前 v").append(versionName).append("  →  新版本 v").append(info.version);
         if (Updater.hasBundledLogos(this)) {
             m.append("\n\n注意：GitHub 上的安装包不含品牌官方图标，");
-            m.append("更新后水印里的品牌标识会变回内置矢量图形。");
+            m.append("更新后将不再自动绘制品牌图标；可重新导入自定义图标。");
         }
         String notes = plainNotes(info.notes);
         // 正文第一行通常就是 "VitreLens 1.39"，标题里已经有了，去掉

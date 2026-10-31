@@ -109,7 +109,7 @@ png = (b'\x89PNG\r\n\x1a\n'
        + chunk(b'IEND', b''))
 open('app/res/drawable-nodpi/logo_%s.png' % sys.argv[1], 'wb').write(png)
 PLACEHOLDER
-    echo "  无本地图标 logo_$n.png，用矢量回退"
+    echo "  无本地图标 logo_$n.png，不绘制品牌图标"
   fi
 done
 
