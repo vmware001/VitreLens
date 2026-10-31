@@ -13,7 +13,7 @@ const build = h.digest('hex').slice(0, 7);
 
 let html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
 html = html.replace(/href="css\/app\.css(\?v=[^"]*)?"/g, `href="css/app.css?v=${build}"`);
-html = html.replace(/src="js\/(app|exif|glass|logos|watermark)\.js(\?v=[^"]*)?"/g, (m, name) => `src="js/${name}.js?v=${build}"`);
+html = html.replace(/src="js\/(app|exif|glass|brands|watermark)\.js(\?v=[^"]*)?"/g, (m, name) => `src="js/${name}.js?v=${build}"`);
 html = html.replace(/<span id="buildTag">[^<]*<\/span>/, `<span id="buildTag">${build}</span>`);
 function writeRetry(file, data, tries) {
   for (var i = 0; i < (tries || 6); i++) {
