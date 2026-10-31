@@ -411,7 +411,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 } finally {
                     in.close();
                 }
-                transcodeWithPolicy(src, hqFile, style.copy(), pd);
+                transcodeWithPolicy(src, hqFile, style.copy(), pd, true);
                 ok = hqFile.exists() && hqFile.length() > 1024;
             } catch (Throwable t) {
                 Log.w("VitreLens", "高质量预览生成失败，回退普通预览", t);
@@ -1732,7 +1732,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
      * 开启 keepOriginalVideo 时只走前两项，任何情况下都不改变输出尺寸。
      */
     private void transcodeWithPolicy(File input, File output, WatermarkPainter.Style st,
-                                     ProgressDialog pd) throws Exception {
+                                     ProgressDialog pd, boolean motionPhotoLayout) throws Exception {
         final boolean keep = panel.keepOriginalVideo;
         // {最长边上限, codecMode}；codecMode 1 表示 CPU 软件编解码
         final int[][] attempts = keep
@@ -1754,7 +1754,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                             if (frame % 3 == 0 || frame >= total) {
                                 setPdMessage(pd, stage + " " + frame + "/" + total);
                             }
-                        }, limit, codecMode, false);
+                        }, limit, codecMode, false, motionPhotoLayout);
                 return;
             } catch (Throwable t) {
                 last = t;
@@ -1774,7 +1774,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
             Uri outUri = null;
             File tmp = new File(getCacheDir(), "vl_video_export.mp4");
             try {
-                transcodeWithPolicy(clip.file, tmp, st, pd);
+                transcodeWithPolicy(clip.file, tmp, st, pd, false);
 
                 String name = "VL_VIDEO_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
                         .format(new Date()) + ".mp4";
@@ -2021,7 +2021,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         }
 
         try {
-            transcodeWithPolicy(tmpIn, tmpOut, st, pd);
+            transcodeWithPolicy(tmpIn, tmpOut, st, pd, true);
         } catch (Throwable t) {
             Log.e("VitreLens", "视频转码失败: " + t, t);
             tmpOut.delete();

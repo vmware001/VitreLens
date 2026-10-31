@@ -64,7 +64,7 @@ class VideoWatermark {
      */
     static long transcode(Context ctx, File in, File out, Composer composer,
                           WatermarkPainter.Style st, Progress cb, int maxDimension) throws Exception {
-        return transcode(ctx, in, out, composer, st, cb, maxDimension, 0, true);
+        return transcode(ctx, in, out, composer, st, cb, maxDimension, 0, true, true);
     }
 
     /**
@@ -73,7 +73,8 @@ class VideoWatermark {
      */
     static long transcode(Context ctx, File in, File out, Composer composer,
                           WatermarkPainter.Style st, Progress cb, int maxDimension,
-                          int codecMode, boolean allowDownscale) throws Exception {
+                          int codecMode, boolean allowDownscale,
+                          boolean motionPhotoLayout) throws Exception {
         MediaExtractor ex = new MediaExtractor();
         ex.setDataSource(in.getAbsolutePath());
 
@@ -231,11 +232,13 @@ class VideoWatermark {
         MediaFormat encFmt = null;
         int done = 0;
         int guard = 0;
-        // 视频取景比照片窄（没有片门全开）：实测 OPPO 约为照片的 94%，且贴着底边裁。
-        // 直接按这个几何关系换算水印位置与宽度，用户还能再手动微调。
         WatermarkPainter.Style vst = st.copy();
-        vst.gapPct = Math.max(0.2f, st.gapPct + st.videoGapShift);
-        vst.widthPct = Math.min(99f, st.widthPct * st.videoWidthScale / 100f);
+        if (motionPhotoLayout) {
+            // 仅动态照片需要取景补偿：它的静态照片与视频段视野不同。
+            // 普通视频没有这层关系，必须原样使用预览里的位置与宽度。
+            vst.gapPct = Math.max(0.2f, st.gapPct + st.videoGapShift);
+            vst.widthPct = Math.min(99f, st.widthPct * st.videoWidthScale / 100f);
+        }
         Log.i(TAG, String.format("视频水印：距底 %.2f%%、宽度 %.1f%%（照片是 %.2f%% / %.1f%%）",
                 vst.gapPct, vst.widthPct, st.gapPct, st.widthPct));
 

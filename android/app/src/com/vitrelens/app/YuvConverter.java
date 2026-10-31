@@ -20,6 +20,15 @@ import java.nio.ByteBuffer;
  */
 final class YuvConverter {
 
+    /** 解码后的逐像素转换是 CPU 热点；按行并行，GL 合成仍留在原单线程队列。 */
+    private static final java.util.concurrent.ExecutorService CPU_POOL =
+            java.util.concurrent.Executors.newFixedThreadPool(
+                    Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors())), r -> {
+                        Thread t = new Thread(r, "vl-yuv");
+                        t.setDaemon(true);
+                        return t;
+                    });
+
     // MediaFormat.COLOR_STANDARD_* 的取值
     private static final int STD_BT709 = 1;
     private static final int STD_BT601_PAL = 2;
@@ -146,19 +155,60 @@ final class YuvConverter {
         int uRow = planes[1].getRowStride(), uPix = planes[1].getPixelStride();
         int vRow = planes[2].getRowStride(), vPix = planes[2].getPixelStride();
 
+        int workers = W * H >= 1000000 ? Math.max(2, Math.min(4,
+                Runtime.getRuntime().availableProcessors())) : 1;
+        if (workers == 1) {
+            convertRows(yB, uB, vB, yRow, yPix, uRow, uPix, vRow, vPix,
+                    scratch, W, H, 0, H);
+        } else {
+            final java.util.concurrent.CountDownLatch done =
+                    new java.util.concurrent.CountDownLatch(workers);
+            final java.util.concurrent.atomic.AtomicBoolean ok =
+                    new java.util.concurrent.atomic.AtomicBoolean(true);
+            for (int i = 0; i < workers; i++) {
+                final int from = H * i / workers;
+                final int to = H * (i + 1) / workers;
+                // duplicate() 共享内容但各自拥有 position，避免多线程争抢缓冲区游标。
+                final ByteBuffer fy = yB.duplicate(), fu = uB.duplicate(), fv = vB.duplicate();
+                CPU_POOL.execute(() -> {
+                    try {
+                        convertRows(fy, fu, fv, yRow, yPix, uRow, uPix, vRow, vPix,
+                                scratch, W, H, from, to);
+                    } catch (Throwable t) {
+                        ok.set(false);
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+            try {
+                done.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            if (!ok.get()) return false;
+        }
+        bmp.setPixels(scratch, 0, W, 0, 0, W, H);
+        return true;
+    }
+
+    /** 每个工作线程只写自己负责的行，读取共享 YUV，写回互不重叠的 ARGB 区域。 */
+    private void convertRows(ByteBuffer yB, ByteBuffer uB, ByteBuffer vB,
+                             int yRow, int yPix, int uRow, int uPix, int vRow, int vPix,
+                             int[] scratch, int W, int H, int fromY, int toY) {
         int cw = (W + 1) / 2;
         int yLen = W * yPix;
         int cLen = cw * Math.max(uPix, vPix);
         byte[] yLine = new byte[yLen];
         byte[] uLine = new byte[cLen];
         byte[] vLine = new byte[cLen];
-
         final byte[] lut = this.lut;
-        for (int y = 0; y < H; y++) {
+
+        for (int y = fromY; y < toY; y++) {
             yB.position(y * yRow);
             int n = Math.min(yLen, yB.remaining());
             yB.get(yLine, 0, n);
-
             if ((y & 1) == 0) {
                 int cy = (y >> 1) * uRow;
                 uB.position(cy);
@@ -168,14 +218,12 @@ final class YuvConverter {
                 int vn = Math.min(cLen, vB.remaining());
                 vB.get(vLine, 0, vn);
             }
-
             int base = y * W;
             for (int x = 0; x < W; x++) {
                 int Y = yLine[x * yPix] & 0xFF;
                 int ci = (x >> 1) * uPix;
                 int U = uLine[ci] & 0xFF;
                 int V = vLine[(x >> 1) * vPix] & 0xFF;
-
                 int c = Y - yOffset;
                 int d = U - 128;
                 int e = V - 128;
@@ -185,7 +233,6 @@ final class YuvConverter {
                 if (r < 0) r = 0; else if (r > 255) r = 255;
                 if (g < 0) g = 0; else if (g > 255) g = 255;
                 if (b < 0) b = 0; else if (b > 255) b = 255;
-
                 if (lut != null) {
                     r = lut[r] & 0xFF;
                     g = lut[g] & 0xFF;
@@ -194,7 +241,5 @@ final class YuvConverter {
                 scratch[base + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
             }
         }
-        bmp.setPixels(scratch, 0, W, 0, 0, W, H);
-        return true;
     }
 }
