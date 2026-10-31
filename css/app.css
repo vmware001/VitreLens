@@ -1261,6 +1261,16 @@ input[type="text"]:focus {
 .topbar-links a:hover { color: #ecf7ff; background: rgba(255,255,255,.065); }
 .topbar-links a:hover span { color: var(--acc); }
 .topbar-links i { width: 1px; height: 12px; background: var(--line-strong); }
+.capability-note {
+  padding: 10px 11px;
+  border-radius: 8px;
+  line-height: 1.65;
+  color: rgba(190,215,235,.82);
+  background: rgba(143,216,255,.055);
+  border: 1px solid rgba(143,216,255,.12);
+}
+.capability-note a { color: var(--acc); text-decoration: none; }
+.capability-note a:hover { text-decoration: underline; }
 @media (max-width: 1100px) {
   .topbar-links { position: static; transform: none; margin-left: auto; }
   .topbar-spacer { display: none; }

@@ -669,7 +669,9 @@
     $('#hudHdrSep').hidden = !hdr;
     $('#hdrNote').hidden = !hdr;
     if (hdr) {
-      $('#hudHdr').title = '检测到 HDR 增益图（ProXDR / Ultra HDR），导出为 SDR';
+      $('#hudHdr').title = keptHdr
+        ? '检测到 HDR 增益图，已随动态照片容器保留'
+        : '检测到 HDR 增益图；当前封装无法保留时导出为 SDR';
     }
     var hudFocal = e ? Exif.formatFocal(Exif.pickFocal(e)) : '';
     hudExif.textContent = e && (e.make || e.model)
