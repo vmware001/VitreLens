@@ -64,6 +64,16 @@ class VideoWatermark {
      */
     static long transcode(Context ctx, File in, File out, Composer composer,
                           WatermarkPainter.Style st, Progress cb, int maxDimension) throws Exception {
+        return transcode(ctx, in, out, composer, st, cb, maxDimension, 0, true);
+    }
+
+    /**
+     * @param codecMode 0 = 系统默认编解码器，1 = 强制 CPU 软件编解码器
+     * @param allowDownscale 配置编码器失败时是否允许内部继续降尺寸
+     */
+    static long transcode(Context ctx, File in, File out, Composer composer,
+                          WatermarkPainter.Style st, Progress cb, int maxDimension,
+                          int codecMode, boolean allowDownscale) throws Exception {
         MediaExtractor ex = new MediaExtractor();
         ex.setDataSource(in.getAbsolutePath());
 
@@ -175,14 +185,15 @@ class VideoWatermark {
         MediaCodec enc = null;
         Throwable configureError = null;
         // 原尺寸 → 最长边 1280 → 最长边 864。逐级尝试，不在第一台设备上就牺牲清晰度。
-        for (int attempt = 0; attempt < 3 && enc == null; attempt++) {
+        final int configureAttempts = allowDownscale ? 3 : 1;
+        for (int attempt = 0; attempt < configureAttempts && enc == null; attempt++) {
             int limit = attempt == 0 ? 0 : (attempt == 1 ? 1280 : 864);
             float k = limit == 0 ? 1f : Math.min(1f, limit / (float) Math.max(originalW, originalH));
             outW = align2(Math.round(originalW * k));
             outH = align2(Math.round(originalH * k));
             MediaCodec candidate = null;
             try {
-                candidate = MediaCodec.createEncoderByType(encMime);
+                candidate = createEncoder(encMime, codecMode == 1);
                 candidate.configure(encoderFormat(encMime, outW, outH, fps, hdrOut),
                         null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                 enc = candidate;
@@ -204,7 +215,7 @@ class VideoWatermark {
         //     让它写 RGBA 会 setPortMode(DynamicANWBuffer) 失败，configure 直接报错；
         //  2. 不强行指定 KEY_COLOR_FORMAT，让解码器自己挑它支持的 YUV 格式。
         //  3. 逐个解码器试：有的机器上首个（通常是硬解）会 configure 失败，要能回退到软解。
-        MediaCodec dec = openDecoder(vMime, vf);
+        MediaCodec dec = openDecoder(vMime, vf, codecMode == 1);
         dec.start();
 
         Bitmap frameRaw = Bitmap.createBitmap(srcW, srcH, Bitmap.Config.ARGB_8888);
@@ -448,13 +459,50 @@ class VideoWatermark {
         return out.length();
     }
 
+    private static boolean softwareCodec(String name) {
+        String n = name.toLowerCase(java.util.Locale.US);
+        return n.startsWith("c2.android.") || n.startsWith("omx.google.")
+                || n.contains("software") || n.contains("soft");
+    }
+
+    /** 强制 CPU 时只创建软件编码器；找不到就明确失败，不能偷偷又退回硬件。 */
+    private static MediaCodec createEncoder(String mime, boolean software) throws Exception {
+        if (!software) return MediaCodec.createEncoderByType(mime);
+        List<String> names = new ArrayList<String>();
+        MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+        for (MediaCodecInfo ci : list.getCodecInfos()) {
+            if (!ci.isEncoder() || !softwareCodec(ci.getName())) continue;
+            for (String type : ci.getSupportedTypes()) {
+                if (type.equalsIgnoreCase(mime)) {
+                    names.add(ci.getName());
+                    break;
+                }
+            }
+        }
+        if (names.isEmpty()) throw new RuntimeException("设备没有 " + mime + " 软件编码器");
+        // 同一设备常同时暴露 OMX.google 与 c2.android 两套软件实现，优先更新的 C2。
+        String name = names.get(0);
+        for (String n : names) {
+            if (n.toLowerCase(java.util.Locale.US).startsWith("c2.android.")) {
+                name = n;
+                break;
+            }
+        }
+        Log.i(TAG, "使用 CPU 软件编码器：" + name + "（候选 " + names + "）");
+        return MediaCodec.createByCodecName(name);
+    }
+
     /** 按优先顺序挑解码器：先系统默认（真机通常是硬解），configure 失败就换下一个 */
     static MediaCodec openDecoder(String mime, MediaFormat fmt) {
+        return openDecoder(mime, fmt, false);
+    }
+
+    static MediaCodec openDecoder(String mime, MediaFormat fmt, boolean software) {
         List<String> names = new ArrayList<String>();
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
             for (MediaCodecInfo ci : list.getCodecInfos()) {
-                if (ci.isEncoder()) continue;
+                if (ci.isEncoder() || (software && !softwareCodec(ci.getName()))) continue;
                 for (String t : ci.getSupportedTypes()) {
                     if (t.equalsIgnoreCase(mime)) {
                         names.add(ci.getName());
@@ -465,7 +513,10 @@ class VideoWatermark {
         } catch (Throwable t) {
             Log.w(TAG, "枚举解码器失败：" + t);
         }
-        if (names.isEmpty()) names.add(mime);   // 交给系统按 mime 选
+        if (names.isEmpty()) {
+            if (software) throw new RuntimeException("设备没有 " + mime + " 软件解码器");
+            names.add(mime);   // 交给系统按 mime 选
+        }
 
         StringBuilder tried = new StringBuilder();
         for (String n : names) {

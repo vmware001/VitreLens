@@ -216,6 +216,11 @@ class ControlPanel {
                 () -> new boolean[]{videoOn},
                 (i, on) -> videoOn = on);
         hint(c4, "勾上后，实况照片的视频段也会重新编码并打上同样的水印。");
+        chips(c4, new String[]{"始终保留原始分辨率"},
+                () -> new boolean[]{keepOriginalVideo},
+                (i, on) -> keepOriginalVideo = on);
+        hint(c4, "开启后只尝试硬件与 CPU 软件编解码，绝不降低分辨率；"
+                + "关闭时，两种方式都失败后才会降到 1280 / 864。CPU 编码可能很慢。");
         slider(c4, "视频水印高度", -4, 14, 0.2f,
                 () -> st.videoGapShift, v -> st.videoGapShift = v,
                 p -> String.format(Locale.US, "%+.1f%%", p));
@@ -243,6 +248,8 @@ class ControlPanel {
     /* ── 外部状态 ── */
 
     boolean videoOn = true;
+    /** 视频导出宁可失败也不降分辨率；CPU 软件编解码作为硬件失败后的后备 */
+    boolean keepOriginalVideo = false;
 
     void refreshAll() {
         for (Runnable r : refreshers) r.run();

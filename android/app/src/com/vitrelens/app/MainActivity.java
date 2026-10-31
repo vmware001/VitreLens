@@ -411,8 +411,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 } finally {
                     in.close();
                 }
-                VideoWatermark.transcode(this, src, hqFile, composer, style.copy(),
-                        (frame, total, stage) -> { });
+                transcodeWithPolicy(src, hqFile, style.copy(), pd);
                 ok = hqFile.exists() && hqFile.length() > 1024;
             } catch (Throwable t) {
                 Log.w("VitreLens", "高质量预览生成失败，回退普通预览", t);
@@ -1728,6 +1727,43 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         exportOne(null);
     }
 
+    /**
+     * 硬件原尺寸 → CPU 软件编解码原尺寸 →（可选）1280 → 864。
+     * 开启 keepOriginalVideo 时只走前两项，任何情况下都不改变输出尺寸。
+     */
+    private void transcodeWithPolicy(File input, File output, WatermarkPainter.Style st,
+                                     ProgressDialog pd) throws Exception {
+        final boolean keep = panel.keepOriginalVideo;
+        // {最长边上限, codecMode}；codecMode 1 表示 CPU 软件编解码
+        final int[][] attempts = keep
+                ? new int[][]{{0, 0}, {0, 1}}
+                : new int[][]{{0, 0}, {0, 1}, {1280, 0}, {864, 0}};
+        Throwable last = null;
+        for (int i = 0; i < attempts.length; i++) {
+            final int limit = attempts[i][0];
+            final int codecMode = attempts[i][1];
+            try {
+                if (i > 0) {
+                    setPdMessage(pd, codecMode == 1
+                            ? "硬件失败，正在用 CPU 保持原始分辨率重试…"
+                            : "正在以最长边 " + limit + " 重试…");
+                    if (output.exists()) output.delete();
+                }
+                VideoWatermark.transcode(this, input, output, composer, st,
+                        (frame, total, stage) -> {
+                            if (frame % 3 == 0 || frame >= total) {
+                                setPdMessage(pd, stage + " " + frame + "/" + total);
+                            }
+                        }, limit, codecMode, false);
+                return;
+            } catch (Throwable t) {
+                last = t;
+                Log.w("VitreLens", "编码尝试失败：limit=" + limit + " codecMode=" + codecMode, t);
+            }
+        }
+        throw new Exception(keep ? "硬件与 CPU 均无法按原始分辨率导出" : "视频编码失败", last);
+    }
+
     /** 普通视频导出：复用实况照片的逐帧 GL 合成与编码器，音轨原样保留。 */
     private void exportVideo() {
         final VideoClip clip = videoClip;
@@ -1738,31 +1774,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
             Uri outUri = null;
             File tmp = new File(getCacheDir(), "vl_video_export.mp4");
             try {
-                // 有些设备在 configure 时接受 8K，开始编码后才报错；这种运行时失败
-                // 只能在新建编码器后重试。依次尝试原尺寸、最长边 1280、最长边 864。
-                final int[] limits = {0, 1280, 864};
-                Throwable transcodeError = null;
-                boolean encoded = false;
-                for (int attempt = 0; attempt < limits.length && !encoded; attempt++) {
-                    try {
-                        if (attempt > 0) {
-                            setPdMessage(pd, "当前设备无法按上一档编码，正在降低分辨率重试…");
-                            if (tmp.exists()) tmp.delete();
-                        }
-                        final int limit = limits[attempt];
-                        VideoWatermark.transcode(this, clip.file, tmp, composer, st,
-                                (frame, total, stage) -> {
-                                    if (frame % 3 == 0 || frame >= total) {
-                                        setPdMessage(pd, stage + " " + frame + "/" + total);
-                                    }
-                                }, limit);
-                        encoded = true;
-                    } catch (Throwable t) {
-                        transcodeError = t;
-                        Log.w("VitreLens", "视频编码档位 " + limits[attempt] + " 失败", t);
-                    }
-                }
-                if (!encoded) throw new Exception("视频编码失败", transcodeError);
+                transcodeWithPolicy(clip.file, tmp, st, pd);
 
                 String name = "VL_VIDEO_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
                         .format(new Date()) + ".mp4";
@@ -2009,12 +2021,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         }
 
         try {
-            VideoWatermark.transcode(this, tmpIn, tmpOut, composer, st,
-                    (frame, total, stage) -> {
-                        if (frame % 3 == 0 || frame >= total) {
-                            setPdMessage(pd, stage + " " + frame + "/" + total);
-                        }
-                    });
+            transcodeWithPolicy(tmpIn, tmpOut, st, pd);
         } catch (Throwable t) {
             Log.e("VitreLens", "视频转码失败: " + t, t);
             tmpOut.delete();
