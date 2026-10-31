@@ -155,29 +155,32 @@ class VideoWatermark {
                 srcW, srcH, outW, outH, totalFrames, durSec, fps, rotation));
         if (cb != null) cb.onProgress(0, totalFrames, "准备编码器");
 
-        // ── 3. 编码器
+        // ── 3. 编码器。优先保持原分辨率；只有设备明确拒绝时才等比降档。
         final String encMime = hdrOut ? "video/hevc" : "video/avc";
-        MediaCodec enc = MediaCodec.createEncoderByType(encMime);
-        MediaFormat ef = MediaFormat.createVideoFormat(encMime, outW, outH);
-        ef.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(outW, outH, fps));
-        ef.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
-        ef.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
-        // 标签必须和内容一致：HDR 直通时喂进去的是 HLG 信号，就得标 BT.2020/HLG，
-        // 否则播放器按 SDR 解读，高光被压平、颜色发灰。
-        try {
-            if (hdrOut) {
-                ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020);
-                ef.setInteger("color-transfer", 7);   // HLG（常量在低版本 SDK 里没有）
-                ef.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
-            } else {
-                ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
-                ef.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
-                ef.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+        final int originalW = outW, originalH = outH;
+        MediaCodec enc = null;
+        Throwable configureError = null;
+        // 原尺寸 → 最长边 1280 → 最长边 864。逐级尝试，不在第一台设备上就牺牲清晰度。
+        for (int attempt = 0; attempt < 3 && enc == null; attempt++) {
+            int limit = attempt == 0 ? 0 : (attempt == 1 ? 1280 : 864);
+            float k = limit == 0 ? 1f : Math.min(1f, limit / (float) Math.max(originalW, originalH));
+            outW = align2(Math.round(originalW * k));
+            outH = align2(Math.round(originalH * k));
+            MediaCodec candidate = null;
+            try {
+                candidate = MediaCodec.createEncoderByType(encMime);
+                candidate.configure(encoderFormat(encMime, outW, outH, fps, hdrOut),
+                        null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                enc = candidate;
+                if (attempt > 0) Log.w(TAG, "编码器不接受原尺寸，等比降为 " + outW + "x" + outH);
+            } catch (Throwable t) {
+                configureError = t;
+                if (candidate != null) {
+                    try { candidate.release(); } catch (Throwable ignored) { }
+                }
             }
-        } catch (Throwable ignored) {
         }
-        enc.configure(ef, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+        if (enc == null) throw new Exception("没有可用的视频编码器", configureError);
         Surface encSurface = enc.createInputSurface();
         enc.start();
 
@@ -191,10 +194,11 @@ class VideoWatermark {
         dec.start();
 
         Bitmap frameRaw = Bitmap.createBitmap(srcW, srcH, Bitmap.Config.ARGB_8888);
-        Bitmap frameWork = (rotation == 0) ? frameRaw
-                : Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888);
+        boolean resizeFrame = rotation != 0 || outW != srcW || outH != srcH;
+        Bitmap frameWork = resizeFrame ? Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+                : frameRaw;
         int[] rowPixels = new int[srcW * srcH];
-        Canvas workCanvas = (rotation == 0) ? null : new Canvas(frameWork);
+        Canvas workCanvas = resizeFrame ? new Canvas(frameWork) : null;
         Paint blitPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
 
         SurfaceBlitter blitter = new SurfaceBlitter(encSurface, outW, outH);
@@ -266,11 +270,15 @@ class VideoWatermark {
                         }
                         if (ok.v) {
                             Bitmap work = frameRaw;
-                            if (rotation != 0) {
+                            if (resizeFrame) {
                                 workCanvas.drawColor(0xFF000000);
                                 workCanvas.save();
                                 workCanvas.translate(outW / 2f, outH / 2f);
                                 workCanvas.rotate(rotation);
+                                float rw = swapped ? srcH : srcW;
+                                float rh = swapped ? srcW : srcH;
+                                float fit = Math.min(outW / rw, outH / rh);
+                                workCanvas.scale(fit, fit);
                                 workCanvas.translate(-srcW / 2f, -srcH / 2f);
                                 workCanvas.drawBitmap(frameRaw, 0, 0, blitPaint);
                                 workCanvas.restore();
@@ -350,12 +358,16 @@ class VideoWatermark {
         Collections.sort(all, (a, b) -> Long.compare(a.ptsUs, b.ptsUs));
 
         MediaMuxer mux = new MediaMuxer(out.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-        // MediaMuxer 依据「编码器输出格式」写 colr box，输入格式上的声明传不过来。
-        // 不补这一段，成片里没有 colr —— 虽然播放器会按默认的 BT.709/SDR 解读（正好与我们
-        // 输出的内容一致），但显式写清楚更稳妥。
+        // MediaMuxer 依据「编码器输出格式」写 colr box。HDR 直通时必须保留 BT.2020/HLG，
+        // 不能一律覆盖成 SDR，否则文件里是 HLG 信号、播放器却按 BT.709 解码，颜色会失真。
         try {
-            encFmt.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
-            encFmt.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+            if (hdrOut) {
+                encFmt.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020);
+                encFmt.setInteger("color-transfer", 7); // HLG
+            } else {
+                encFmt.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
+                encFmt.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+            }
             encFmt.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
         } catch (Throwable ignored) {
         }
@@ -423,7 +435,7 @@ class VideoWatermark {
     }
 
     /** 按优先顺序挑解码器：先系统默认（真机通常是硬解），configure 失败就换下一个 */
-    private static MediaCodec openDecoder(String mime, MediaFormat fmt) {
+    static MediaCodec openDecoder(String mime, MediaFormat fmt) {
         List<String> names = new ArrayList<String>();
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
@@ -494,6 +506,26 @@ class VideoWatermark {
     /** 小盒子，用来把「这帧转换成功了吗」带出 try 块 */
     private static class Box {
         boolean v;
+    }
+
+    private static MediaFormat encoderFormat(String mime, int w, int h, int fps, boolean hdrOut) {
+        MediaFormat ef = MediaFormat.createVideoFormat(mime, w, h);
+        ef.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(w, h, fps));
+        ef.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+        ef.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+        try {
+            if (hdrOut) {
+                ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020);
+                ef.setInteger("color-transfer", 7);
+            } else {
+                ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
+                ef.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
+            }
+            ef.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED);
+        } catch (Throwable ignored) {
+        }
+        return ef;
     }
 
     private static int bitrateFor(int w, int h, int fps) {

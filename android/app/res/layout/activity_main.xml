@@ -176,6 +176,38 @@
                 android:background="@drawable/bg_chip" />
         </FrameLayout>
 
+        <!-- 普通视频模式：选择要高质量预览的精确帧 -->
+        <LinearLayout
+            android:id="@+id/videoFrameBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginStart="12dp"
+            android:layout_marginEnd="12dp"
+            android:layout_marginTop="8dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="6dp"
+            android:background="@drawable/bg_glass_card"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/videoFrameLabel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="第 1 帧 · 00:00.000"
+                android:textColor="#E6FFFFFF"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/videoFrameSeek"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:splitTrack="false" />
+        </LinearLayout>
+
         <!-- 选了多张照片时显示，点缩略图切换当前编辑的那张 -->
         <HorizontalScrollView
             android:id="@+id/filmRow"

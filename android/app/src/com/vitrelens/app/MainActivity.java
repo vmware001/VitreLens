@@ -29,6 +29,7 @@ import android.widget.ImageView;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -43,10 +44,11 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeListener {
 
     private static final int REQ_PICK = 1001;
     private static final int REQ_LOGO = 1002;
+    private static final int REQ_VIDEO = 1003;
     // 预览从 1400 提高到 2000：全图仍按 View 缩放，特写与高分辨率 Logo 不再明显发虚
     private static final int PREVIEW_MAX = 2000;
 
@@ -95,6 +97,19 @@ public class MainActivity extends Activity {
     private int srcW, srcH;
     private Bitmap previewBase;
 
+    /* 普通视频模式：帧滑块只解码当前帧，导出时才处理整段视频 */
+    private Uri videoUri;
+    private VideoClip videoClip;
+    private Bitmap videoRawFrame;
+    private int videoRawIndex = -1;
+    private int videoFrameIndex;
+    private int videoPreviewSeq;
+    private final Runnable videoFrameTask = () -> renderVideoPreview(true);
+    private final Runnable videoStyleTask = () -> renderVideoPreview(false);
+    private LinearLayout videoFrameBar;
+    private SeekBar videoFrameSeek;
+    private TextView videoFrameLabel;
+
     private GlassRenderer glass;
     private Composer composer;
     private String glError;
@@ -118,6 +133,10 @@ public class MainActivity extends Activity {
         clearHqPreview();
         filmRow = findViewById(R.id.filmRow);
         filmstrip = findViewById(R.id.filmstrip);
+        videoFrameBar = findViewById(R.id.videoFrameBar);
+        videoFrameSeek = findViewById(R.id.videoFrameSeek);
+        videoFrameLabel = findViewById(R.id.videoFrameLabel);
+        videoFrameSeek.setOnSeekBarChangeListener(this);
         hint = findViewById(R.id.hint);
         status = findViewById(R.id.status);
         sizeInfo = findViewById(R.id.sizeInfo);
@@ -232,7 +251,7 @@ public class MainActivity extends Activity {
         // 点版本号手动检查更新（不额外占界面）
         ver.setOnClickListener(v -> checkUpdate(false));
 
-        btnPick.setOnClickListener(v -> pickImage());
+        btnPick.setOnClickListener(v -> pickSource());
         btnExport.setOnClickListener(v -> export());
 
         try {
@@ -270,7 +289,7 @@ public class MainActivity extends Activity {
 
         status.setText(glass == null
                 ? "液态玻璃初始化失败（" + glError + "），导出将只含水印文字"
-                : "支持 JPG / PNG / HEIC；导出保留 EXIF、动态照片与 HDR 增益图");
+                : "支持 JPG / PNG / HEIC / MP4；照片保留元数据，视频可逐帧预览并导出");
 
         handleIncoming(getIntent());
 
@@ -301,6 +320,7 @@ public class MainActivity extends Activity {
         recycleQuietly(lastComposed);
         recycleQuietly(cropBuf);
         recycleQuietly(previewBase);
+        recycleQuietly(videoRawFrame);
         recycleQuietly(photo);
         lastComposed = null;
         cropBuf = null;
@@ -695,6 +715,16 @@ public class MainActivity extends Activity {
         }
         if (uri == null) return;
         final Uri u = uri;
+        String type = it.getType();
+        if (type == null) {
+            try { type = getContentResolver().getType(u); } catch (Throwable ignored) { }
+        }
+        String path = u.getPath();
+        if ((type != null && type.startsWith("video/"))
+                || (path != null && path.toLowerCase(Locale.US).matches(".*\\.(mp4|mov|mkv|webm|m4v)$"))) {
+            loadVideo(u);
+            return;
+        }
         photoUris.clear();
         photoUris.add(u);
         photoIndex = 0;
@@ -703,6 +733,33 @@ public class MainActivity extends Activity {
             try { getContentResolver().takePersistableUriPermission(u, flags); } catch (Exception ignored) { }
         }
         loadImage(u);
+    }
+
+    private void pickSource() {
+        new AlertDialog.Builder(this)
+                .setTitle("选择素材")
+                .setItems(new String[]{"照片（可多选）", "普通视频"}, (d, which) -> {
+                    if (which == 0) pickImage();
+                    else pickVideo();
+                })
+                .show();
+    }
+
+    private void pickVideo() {
+        Intent i = new Intent(Intent.ACTION_PICK);
+        i.setDataAndType(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video/*");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        if (i.resolveActivity(getPackageManager()) == null) {
+            i = new Intent(Intent.ACTION_GET_CONTENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("video/*");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+        try {
+            startActivityForResult(i, REQ_VIDEO);
+        } catch (Throwable t) {
+            toast("没有找到可用的视频选择器");
+        }
     }
 
     private void pickImage() {
@@ -748,6 +805,9 @@ public class MainActivity extends Activity {
                 photoIndex = 0;
                 loadImage(photoUris.get(0), false);
             }
+        } else if (req == REQ_VIDEO && res == RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            if (uri != null) loadVideo(uri);
         } else if (req == REQ_LOGO && res == RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) importCustomLogo(uri);
@@ -917,11 +977,154 @@ public class MainActivity extends Activity {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
+    /* ── 普通视频：选择精确帧预览，整段导出 ── */
+
+    private void clearVideoMode() {
+        videoPreviewSeq++;
+        videoUri = null;
+        videoClip = null;
+        videoRawIndex = -1;
+        videoFrameIndex = 0;
+        final Bitmap oldFrame = videoRawFrame;
+        videoRawFrame = null;
+        // 旧帧可能正被 GL 队列合成，回收也排到同一条队列，避免跨线程 use-after-recycle
+        if (oldFrame != null) glQueue.execute(() -> recycleQuietly(oldFrame));
+        if (videoFrameBar != null) videoFrameBar.setVisibility(View.GONE);
+        ui.removeCallbacks(videoFrameTask);
+        ui.removeCallbacks(videoStyleTask);
+    }
+
+    private void loadVideo(Uri uri) {
+        stopVideo();
+        clearVideoMode();
+        photoUris.clear();
+        if (filmRow != null) filmRow.setVisibility(View.GONE);
+        recycleQuietly(photo);
+        photo = null;
+        meta = null;
+        videoUri = uri;
+        btnPlay.setVisibility(View.GONE);
+        hint.setVisibility(View.GONE);
+        btnExport.setEnabled(false);
+        sizeInfo.setText("读取视频…");
+        ProgressDialog pd = ProgressDialog.show(this, "", "读取视频…", true, false);
+        new Thread(() -> {
+            try {
+                final VideoClip clip = VideoClip.open(this, uri,
+                        new File(getCacheDir(), "vl_input_video.mp4"));
+                runOnUiThread(() -> {
+                    if (pd.isShowing()) pd.dismiss();
+                    videoClip = clip;
+                    videoFrameIndex = 0;
+                    videoFrameSeek.setMax(clip.frameCount - 1);
+                    videoFrameSeek.setProgress(0);
+                    videoFrameBar.setVisibility(View.VISIBLE);
+                    sizeInfo.setText(clip.width + " × " + clip.height + " · "
+                            + clip.frameCount + " 帧 · " + formatVideoTime(clip.durationUs));
+                    status.setText("拖动帧滑块精确预览；导出会对整段视频逐帧添加同款液态玻璃水印");
+                    btnExport.setEnabled(true);
+                    updateVideoFrameLabel();
+                    renderVideoPreview(true);
+                });
+            } catch (Throwable t) {
+                final String msg = String.valueOf(t.getMessage());
+                runOnUiThread(() -> {
+                    if (pd.isShowing()) pd.dismiss();
+                    sizeInfo.setText("视频读取失败");
+                    toast("读取视频失败：" + msg);
+                });
+            }
+        }).start();
+    }
+
+    private void scheduleVideoFrame() {
+        ui.removeCallbacks(videoFrameTask);
+        // 拖动过程中只做短防抖；松手会立即执行。每次只解码一帧，不启动整段转码。
+        ui.postDelayed(videoFrameTask, 160);
+    }
+
+    @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+        if (!fromUser || videoClip == null) return;
+        videoFrameIndex = progress;
+        updateVideoFrameLabel();
+        scheduleVideoFrame();
+    }
+
+    @Override public void onStartTrackingTouch(SeekBar bar) {
+        ui.removeCallbacks(videoFrameTask);
+    }
+
+    @Override public void onStopTrackingTouch(SeekBar bar) {
+        ui.removeCallbacks(videoFrameTask);
+        ui.post(videoFrameTask);
+    }
+
+    private void updateVideoFrameLabel() {
+        if (videoClip == null || videoFrameLabel == null) return;
+        videoFrameLabel.setText(String.format(Locale.US, "第 %d / %d 帧 · %s",
+                videoFrameIndex + 1, videoClip.frameCount,
+                formatVideoTime(videoClip.timeUsForFrame(videoFrameIndex))));
+    }
+
+    private static String formatVideoTime(long us) {
+        long ms = Math.max(0, us / 1000);
+        return String.format(Locale.US, "%02d:%02d.%03d",
+                ms / 60000, (ms / 1000) % 60, ms % 1000);
+    }
+
+    private void renderVideoPreview(final boolean decodeFrame) {
+        final VideoClip clip = videoClip;
+        if (clip == null) return;
+        final int index = videoFrameIndex;
+        final int seq = ++videoPreviewSeq;
+        final WatermarkPainter.Style st = style.copy();
+        glQueue.execute(() -> {
+            Bitmap out = null, bg = null;
+            try {
+                if (decodeFrame || videoRawFrame == null || videoRawIndex != index) {
+                    Bitmap fresh = clip.frameAt(clip.timeUsForFrame(index), PREVIEW_MAX);
+                    Bitmap old = videoRawFrame;
+                    videoRawFrame = fresh;
+                    videoRawIndex = index;
+                    if (old != null && old != fresh) old.recycle();
+                }
+                Bitmap work = videoRawFrame.copy(Bitmap.Config.ARGB_8888, true);
+                if (work == null) throw new RuntimeException("无法创建预览帧");
+                out = composer.composeOn(work, work.getWidth(), work.getHeight(), st);
+                bg = makeBackdrop(out);
+            } catch (Throwable t) {
+                Log.w("VitreLens", "视频帧预览失败", t);
+            }
+            final Bitmap result = out, background = bg;
+            ui.post(() -> {
+                if (result == null) {
+                    toast("这一帧预览失败");
+                    return;
+                }
+                if (seq != videoPreviewSeq || videoClip != clip) {
+                    recycleQuietly(result);
+                    recycleQuietly(background);
+                    return;
+                }
+                Bitmap previous = lastComposed;
+                previewBase = result;
+                lastComposed = result;
+                if (detailMode) updateCloseUp();
+                else preview.setImageBitmap(result);
+                if (previous != null && previous != result) recycleQuietly(previous);
+                backdropBmp = background;
+                backdrop.setImageBitmap(background);
+                applyUiGlass();
+            });
+        });
+    }
+
     private void loadImage(Uri uri) {
         loadImage(uri, false);
     }
 
     private void loadImage(Uri uri, boolean quiet) {
+        clearVideoMode();
         ProgressDialog pd = quiet ? null : ProgressDialog.show(this, "", "读取照片…", true, false);
         new Thread(() -> {
             try {
@@ -1405,6 +1608,12 @@ public class MainActivity extends Activity {
     }
 
     private void schedulePreview() {
+        if (videoClip != null) {
+            // 样式变化只重跑水印合成，复用已解码的原始帧，不重复访问视频解码器
+            ui.removeCallbacks(videoStyleTask);
+            ui.postDelayed(videoStyleTask, 70);
+            return;
+        }
         if (previewBase == null) return;
         ui.removeCallbacks(previewTask);
         ui.postDelayed(previewTask, 70);
@@ -1413,6 +1622,10 @@ public class MainActivity extends Activity {
     private final Runnable previewTask = this::runPreview;
 
     private void runPreview() {
+        if (videoClip != null) {
+            renderVideoPreview(false);
+            return;
+        }
         if (previewBase == null) return;
         final WatermarkPainter.Style st = style.copy();
         final int seq = ++previewSeq;
@@ -1503,12 +1716,87 @@ public class MainActivity extends Activity {
     /* ── 导出 ── */
 
     private void export() {
+        if (videoClip != null) {
+            exportVideo();
+            return;
+        }
         if (photoUris.size() > 1) {
             startBatch();
             return;
         }
         if (photo == null) return;
         exportOne(null);
+    }
+
+    /** 普通视频导出：复用实况照片的逐帧 GL 合成与编码器，音轨原样保留。 */
+    private void exportVideo() {
+        final VideoClip clip = videoClip;
+        if (clip == null) return;
+        final WatermarkPainter.Style st = style.copy();
+        final ProgressDialog pd = ProgressDialog.show(this, "", "正在给视频加水印…", true, false);
+        glQueue.execute(() -> {
+            Uri outUri = null;
+            File tmp = new File(getCacheDir(), "vl_video_export.mp4");
+            try {
+                VideoWatermark.transcode(this, clip.file, tmp, composer, st,
+                        (frame, total, stage) -> {
+                            if (frame % 3 == 0 || frame >= total) {
+                                setPdMessage(pd, stage + " " + frame + "/" + total);
+                            }
+                        });
+
+                String name = "VL_VIDEO_" + new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
+                        .format(new Date()) + ".mp4";
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.Video.Media.DISPLAY_NAME, name);
+                cv.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                cv.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/VitreLens");
+                cv.put(MediaStore.Video.Media.IS_PENDING, 1);
+                outUri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv);
+                if (outUri == null) throw new RuntimeException("无法创建视频文件");
+
+                InputStream in = new java.io.FileInputStream(tmp);
+                OutputStream out = getContentResolver().openOutputStream(outUri);
+                if (out == null) {
+                    in.close();
+                    throw new RuntimeException("无法写入视频");
+                }
+                try {
+                    byte[] buf = new byte[1024 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) >= 0) {
+                        if (n > 0) out.write(buf, 0, n);
+                    }
+                    out.flush();
+                } finally {
+                    in.close();
+                    out.close();
+                }
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.Video.Media.IS_PENDING, 0);
+                getContentResolver().update(outUri, done, null, null);
+                setPdMessage(pd, "导出完成");
+                ui.post(() -> {
+                    pd.dismiss();
+                    toast("已导出视频 → Movies/VitreLens"
+                            + (VideoWatermark.lastColorNote == null ? "" : "\n" + VideoWatermark.lastColorNote));
+                });
+            } catch (Throwable t) {
+                if (outUri != null) {
+                    try { getContentResolver().delete(outUri, null, null); } catch (Throwable ignored) { }
+                }
+                Log.e("VitreLens", "普通视频导出失败", t);
+                final String msg = String.valueOf(t.getMessage());
+                ui.post(() -> {
+                    pd.dismiss();
+                    new AlertDialog.Builder(this)
+                            .setTitle("视频导出失败")
+                            .setMessage(msg)
+                            .setPositiveButton("好", null)
+                            .show();
+                });
+            }
+        });
     }
 
     /* ── 批量导出：一张接一张，前一张写完再切下一张 ── */
