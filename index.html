@@ -6,7 +6,7 @@
 <title>VitreLens · 液态玻璃水印</title>
 <meta name="description" content="在浏览器本地为照片添加液态玻璃水印：可自定义机型、品牌 Logo、拍摄参数，并调节玻璃折射率与圆角。" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23bfeeff'/%3E%3Cstop offset='1' stop-color='%23a99cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='%230a0c10'/%3E%3Crect x='10' y='22' width='44' height='20' rx='10' fill='url(%23g)' opacity='0.85'/%3E%3Crect x='10.5' y='22.5' width='43' height='19' rx='9.5' fill='none' stroke='%23fff' stroke-opacity='.8'/%3E%3C/svg%3E" />
-<link rel="stylesheet" href="css/app.css?v=4c1071c" />
+<link rel="stylesheet" href="css/app.css?v=web20" />
 </head>
 <body>
 
@@ -128,10 +128,17 @@
     <!-- 检查器 -->
     <aside class="inspector" id="inspector">
 
+      <nav class="insp-rail" aria-label="设置分组">
+        <button class="is-on" data-tab="content">内容</button>
+        <button data-tab="layout">版式</button>
+        <button data-tab="glass">玻璃</button>
+        <button data-tab="export">导出</button>
+      </nav>
+
       <div class="insp-scroll">
 
         <!-- 内容 -->
-        <section class="sec">
+        <section class="sec is-active" data-page="content">
           <div class="sec-head">
             <span class="sec-idx">01</span>
             <h2>水印内容</h2>
@@ -145,7 +152,7 @@
 
           <label class="field">
             <span class="field-label">副标题</span>
-            <input id="fSub" type="text" spellcheck="false" placeholder="例如 哈苏影像 · 光影追寻" />
+            <input id="fSub" type="text" spellcheck="false" placeholder="选填，留空则不显示" />
             <span class="chips" id="subPresets"></span>
           </label>
 
@@ -180,7 +187,7 @@
         </section>
 
         <!-- 版式 -->
-        <section class="sec">
+        <section class="sec" data-page="layout">
           <div class="sec-head">
             <span class="sec-idx">02</span>
             <h2>版式</h2>
@@ -216,6 +223,24 @@
           </div>
 
           <div class="field">
+            <span class="field-label">Logo 位置</span>
+            <div class="ctrl" data-key="logoPosPct" data-min="0" data-max="100" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span>相对位置</span><output></output></div><input type="range" />
+            </div>
+            <div class="seg" data-key="logoRight">
+              <button data-value="false">参数左侧</button><button data-value="true" class="is-on">参数右侧</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="field-label">文字颜色</span>
+            <div class="color-row">
+              <input id="fTextColor" type="color" value="#ffffff" aria-label="文字颜色" />
+              <button class="mini-btn" id="btnAutoColor">恢复自动</button>
+            </div>
+          </div>
+
+          <div class="field">
             <span class="field-label">字体</span>
             <div class="seg seg-4" data-key="font">
               <button data-value="sans" class="is-on">无衬线</button>
@@ -228,104 +253,88 @@
           <div class="field">
             <span class="field-label">机型材质</span>
             <div class="seg" data-key="nameMaterial">
-              <button data-value="liquid">液态玻璃</button>
+              <button data-value="liquid" class="is-on">液态玻璃</button>
               <button data-value="frost">磨砂玻璃</button>
-              <button data-value="solid" class="is-on">不透明</button>
+              <button data-value="solid">不透明</button>
             </div>
           </div>
 
           <div class="field-row field-row-pad">
             <span class="field-label">斜体字形</span>
-            <button class="switch" data-toggle="italic" aria-pressed="true"><i></i></button>
+            <button class="switch" data-toggle="italic" aria-pressed="false"><i></i></button>
           </div>
         </section>
 
         <!-- 液态玻璃 -->
-        <section class="sec">
+        <section class="sec" data-page="glass">
           <div class="sec-head">
-            <span class="sec-idx">03</span>
             <h2>液态玻璃</h2>
-            <span class="sec-hint">实时折射</span>
+            <span class="sec-hint">PBR 实时折射</span>
           </div>
 
-          <div class="presets" id="glassPresets">
-            <button class="preset is-on" data-preset="clear">
-              <span class="preset-dot" style="--c:#bfe9ff"></span>
-              <b>清透</b><i>轻盈折射</i>
-            </button>
-            <button class="preset" data-preset="frost">
-              <span class="preset-dot" style="--c:#c9d6e6"></span>
-              <b>磨砂</b><i>柔雾质感</i>
-            </button>
-            <button class="preset" data-preset="thick">
-              <span class="preset-dot" style="--c:#d9c7ff"></span>
-              <b>厚玻璃</b><i>强边缘透镜</i>
-            </button>
-          </div>
-
-          <div class="ctrl" data-key="ior" data-min="1" data-max="2" data-step="0.01" data-format="fixed2">
-            <div class="ctrl-top"><span title="1.0 = 空气，1.5 = 普通玻璃，越大折射越强">玻璃折射率</span><output></output></div>
-            <input type="range" />
-          </div>
-
-          <div class="ctrl" data-key="radius" data-min="0" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>圆角 R</span><output></output></div>
-            <input type="range" />
-          </div>
-
-          <div class="ctrl" data-key="bevel" data-min="5" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span title="玻璃厚度：越大，边缘折射位移越强">边缘厚度</span><output></output></div>
-            <input type="range" />
-          </div>
-
-          <div class="ctrl" data-key="edgeWidth" data-min="5" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span title="边缘液态折射带与暗影的宽度">液态宽度</span><output></output></div>
-            <input type="range" />
+          <div class="presets presets-4" id="glassPresets">
+            <button class="preset is-on" data-preset="regular"><b>常规</b><i>平衡透明</i></button>
+            <button class="preset" data-preset="clear"><b>清透</b><i>轻盈折射</i></button>
+            <button class="preset" data-preset="frost"><b>磨砂</b><i>主题实色</i></button>
+            <button class="preset" data-preset="thick"><b>厚玻璃</b><i>强边缘透镜</i></button>
           </div>
 
           <div class="ctrl" data-key="frost" data-min="0" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>磨砂模糊</span><output></output></div>
-            <input type="range" />
+            <div class="ctrl-top"><span>模糊度</span><output></output></div><input type="range" />
           </div>
-
-          <div class="ctrl" data-key="chroma" data-min="0" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>边缘色散</span><output></output></div>
-            <input type="range" />
+          <div class="ctrl" data-key="edgeWidth" data-min="0" data-max="100" data-step="1" data-suffix="%">
+            <div class="ctrl-top"><span title="光线在玻璃中走过的路程">厚度</span><output></output></div><input type="range" />
           </div>
-
-          <div class="ctrl" data-key="spec" data-min="0" data-max="200" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>高光强度</span><output></output></div>
-            <input type="range" />
+          <div class="ctrl" data-key="spec" data-min="0" data-max="100" data-step="1" data-suffix="%">
+            <div class="ctrl-top"><span>高光</span><output></output></div><input type="range" />
           </div>
-
-          <div class="ctrl" data-key="rim" data-min="0" data-max="200" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>边缘描边</span><output></output></div>
-            <input type="range" />
-          </div>
-
-          <div class="ctrl" data-key="bright" data-min="-30" data-max="40" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>玻璃亮度</span><output></output></div>
-            <input type="range" />
-          </div>
-
-          <div class="ctrl" data-key="white" data-min="0" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span title="在玻璃上叠加一层白色，模拟雾面/加白">加白</span><output></output></div>
-            <input type="range" />
-          </div>
-
-          <div class="ctrl" data-key="tint" data-min="0" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>冷色调</span><output></output></div>
-            <input type="range" />
-          </div>
-
           <div class="ctrl" data-key="shadow" data-min="0" data-max="100" data-step="1" data-suffix="%">
-            <div class="ctrl-top"><span>投影强度</span><output></output></div>
-            <input type="range" />
+            <div class="ctrl-top"><span>投影</span><output></output></div><input type="range" />
           </div>
+
+          <details class="advanced" open>
+            <summary>高级光学</summary>
+            <div class="ctrl" data-key="bevel" data-min="0" data-max="100" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span title="圆角斜面宽度">深度</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="edge" data-min="0" data-max="200" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span title="外沿最大采样深度；超过斜面宽度会形成镜像">边缘折射</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="chroma" data-min="0" data-max="100" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span>色散</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="rim" data-min="0" data-max="100" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span>反射率</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="trans" data-min="50" data-max="100" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span>透射率</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="white" data-min="0" data-max="100" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span>不透明度</span><output></output></div><input type="range" />
+            </div>
+            <div class="field">
+              <span class="field-label">磨砂色调</span>
+              <div class="seg" data-key="frostTone">
+                <button data-value="0" class="is-on">自动</button><button data-value="1">深色</button><button data-value="2">浅色</button>
+              </div>
+            </div>
+            <div class="ctrl" data-key="ior" data-min="1.2" data-max="1.8" data-step="0.01" data-format="fixed2">
+              <div class="ctrl-top"><span>折射率</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="radius" data-min="0" data-max="100" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span>圆角 R</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="warp" data-min="0" data-max="200" data-step="1" data-suffix="%">
+              <div class="ctrl-top"><span>艺术扭曲</span><output></output></div><input type="range" />
+            </div>
+            <div class="ctrl" data-key="segments" data-min="8" data-max="128" data-step="4" data-suffix="">
+              <div class="ctrl-top"><span title="只提高法线精度，不增加采样次数">细分</span><output></output></div><input type="range" />
+            </div>
+          </details>
         </section>
 
         <!-- 导出 -->
-        <section class="sec sec-last">
+        <section class="sec sec-last" data-page="export">
           <div class="sec-head">
             <span class="sec-idx">04</span>
             <h2>导出</h2>
@@ -361,7 +370,7 @@
             该照片含 HDR 增益图（ProXDR / Ultra HDR）。浏览器重新编码只能输出 SDR，增益图无法随水印保留。
           </p>
           <p class="fineprint">
-            水印随画幅等比缩放，预览即为最终效果。所有计算在本地浏览器完成 · 构建 <span id="buildTag">4c1071c</span>
+            水印随画幅等比缩放，预览即为最终效果。所有计算在本地浏览器完成 · 构建 <span id="buildTag">web20</span>
           </p>
         </section>
 
@@ -374,10 +383,10 @@
 <div class="drag-overlay" id="dragOverlay"><div>松开以导入照片</div></div>
 <input type="file" id="fileInput" accept="image/*,.heic,.heif,.hif" multiple hidden />
 
-<script src="js/exif.js?v=4c1071c"></script>
-<script src="js/brands.js?v=4c1071c"></script>
-<script src="js/watermark.js?v=4c1071c"></script>
-<script src="js/glass.js?v=4c1071c"></script>
-<script src="js/app.js?v=4c1071c"></script>
+<script src="js/exif.js?v=web20"></script>
+<script src="js/brands.js?v=web20"></script>
+<script src="js/watermark.js?v=web20"></script>
+<script src="js/glass.js?v=web20"></script>
+<script src="js/app.js?v=web20"></script>
 </body>
 </html>

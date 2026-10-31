@@ -23,20 +23,28 @@
   };
 
   var DEFAULTS = {
-    showSubtitle: false, showBrand: true, showParams: true, showMeta: true,
-    align: 'center', widthPct: 92, nameSize: 28, metaSize: 10, bottomGap: 3.8,
-    font: 'condensed', italic: true, nameMaterial: 'solid', viewMode: 'detail',
-    ior: 1.44, radius: 100, bevel: 36, edgeWidth: 50, frost: 14, chroma: 0,
-    spec: 46, rim: 90, bright: -6, tint: 16, shadow: 40, white: 0,
+    showSubtitle: true, showBrand: true, showParams: true, showMeta: true,
+    align: 'center', widthPct: 92, nameSize: 24, metaSize: 12.5, bottomGap: 3.8,
+    font: 'sans', italic: false, nameMaterial: 'liquid', viewMode: 'detail',
+    logoRight: true, logoPosPct: 100, textColor: '',
+    ior: 1.46, radius: 100, bevel: 24, edgeWidth: 36, frost: 20, chroma: 6,
+    spec: 28, rim: 28, trans: 98, shadow: 18, white: 0,
+    warp: 0, edge: 140, segments: 128, frostTone: 0,
     format: 'jpeg', scale: 1, quality: 100
   };
 
-  var GLASS_KEYS = ['ior', 'radius', 'bevel', 'edgeWidth', 'frost', 'chroma', 'spec', 'rim', 'bright', 'tint', 'shadow'];
+  var GLASS_KEYS = ['ior', 'radius', 'bevel', 'edgeWidth', 'frost', 'chroma', 'spec', 'rim',
+    'trans', 'shadow', 'white', 'warp', 'edge', 'segments', 'frostTone'];
 
   var GLASS_PRESETS = {
-    clear: { ior: 1.44, radius: 100, bevel: 36, edgeWidth: 50, frost: 14, chroma: 0, spec: 52, rim: 96, bright: -4, tint: 14, shadow: 40 },
-    frost: { ior: 1.26, radius: 100, bevel: 44, edgeWidth: 64, frost: 66, chroma: 0, spec: 30, rim: 78, bright: 7, tint: 26, shadow: 34 },
-    thick: { ior: 1.82, radius: 62, bevel: 66, edgeWidth: 78, frost: 12, chroma: 12, spec: 82, rim: 128, bright: -2, tint: 24, shadow: 58 }
+    regular: { ior: 1.46, radius: 100, bevel: 24, edgeWidth: 36, frost: 20, chroma: 6,
+      spec: 28, rim: 28, trans: 98, shadow: 18, white: 0, warp: 0, edge: 140, segments: 128, frostTone: 0 },
+    clear: { ior: 1.46, radius: 100, bevel: 28, edgeWidth: 44, frost: 4, chroma: 8,
+      spec: 32, rim: 32, trans: 100, shadow: 14, white: 0, warp: 0, edge: 160, segments: 128, frostTone: 0 },
+    frost: { ior: 1.40, radius: 100, bevel: 30, edgeWidth: 44, frost: 76, chroma: 6,
+      spec: 24, rim: 30, trans: 86, shadow: 20, white: 30, warp: 0, edge: 110, segments: 128, frostTone: 0 },
+    thick: { ior: 1.72, radius: 100, bevel: 72, edgeWidth: 88, frost: 8, chroma: 46,
+      spec: 82, rim: 100, trans: 100, shadow: 58, white: 0, warp: 130, edge: 60, segments: 128, frostTone: 0 }
   };
 
   var PARAM_PRESETS = [
@@ -267,14 +275,18 @@
   function glassOpts(s) {
     return {
       ior: clamp(s.ior, 1, 2),
-      frost: s.frost / 100,
-      chroma: s.chroma / 100,
-      spec: s.spec / 100,
-      rim: s.rim / 100,
-      bright: s.bright / 100,
-      tint: s.tint / 100,
+      thickness: s.edgeWidth / 100,
+      rough: s.frost / 100,
+      disp: s.chroma / 100,
+      gloss: s.spec / 100,
+      refl: s.rim / 100,
+      trans: s.trans / 100,
       shadow: s.shadow / 100,
-      white: (s.white || 0) / 100
+      white: (s.white || 0) / 100,
+      warp: (s.warp || 0) / 100,
+      edge: (s.edge === undefined ? 140 : s.edge) / 100,
+      segments: s.segments || 128,
+      frostTone: s.frostTone || 0
     };
   }
 
@@ -980,6 +992,7 @@
     });
 
     $('#qualityCtrl').style.display = state.format === 'jpeg' ? '' : 'none';
+    if ($('#fTextColor')) $('#fTextColor').value = state.textColor || '#ffffff';
     $('#fMeta').value = state.meta || '';
   }
 
@@ -1320,7 +1333,9 @@
       var key = seg.dataset.key;
       seg.querySelectorAll('button').forEach(function (b) {
         b.addEventListener('click', function () {
-          state[key] = b.dataset.value;
+          if (key === 'logoRight') state[key] = b.dataset.value === 'true';
+          else if (key === 'frostTone') state[key] = parseInt(b.dataset.value, 10);
+          else state[key] = b.dataset.value;
           seg.querySelectorAll('button').forEach(function (x) {
             x.classList.toggle('is-on', x === b);
           });
@@ -1671,6 +1686,39 @@
     } catch (err) { /* ignore */ }
   }
 
+  function bindTabs() {
+    document.querySelectorAll('.insp-rail button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.dataset.tab;
+        document.querySelectorAll('.insp-rail button').forEach(function (b) {
+          b.classList.toggle('is-on', b === btn);
+        });
+        document.querySelectorAll('.insp-scroll [data-page]').forEach(function (page) {
+          page.classList.toggle('is-active', page.dataset.page === key);
+        });
+        var scroller = document.querySelector('.insp-scroll');
+        if (scroller) scroller.scrollTop = 0;
+        repaintAllRanges();
+      });
+    });
+  }
+
+  function bindColorControls() {
+    var input = $('#fTextColor');
+    if (!input) return;
+    input.addEventListener('input', function () {
+      state.textColor = input.value;
+      requestRender();
+      saveSettings();
+    });
+    $('#btnAutoColor').addEventListener('click', function () {
+      state.textColor = '';
+      input.value = '#ffffff';
+      requestRender();
+      saveSettings();
+    });
+  }
+
   /* ═══════════ 事件 ═══════════ */
 
   function openPicker() { fileInput.click(); }
@@ -1790,6 +1838,8 @@
   buildParamChips();
   renderDemo();
   bindControls();
+  bindTabs();
+  bindColorControls();
   syncControls();
   syncBrand();
   buildSubChips();

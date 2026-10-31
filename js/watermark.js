@@ -125,12 +125,15 @@
                  + (paramsOn && metaOn ? lineGap : 0)
                  + (metaOn ? metaM.asc + metaM.desc : 0);
 
-      var logoW = (st.showBrand && st.brand !== 'none') ? global.LG.Logos.measure(ctx, st.brand, nameSize * 1.0) : 0;
-      logoH = nameSize * 1.0;
+      var brandScale = st.brand === 'apple' ? 1.45 : (st.brand === 'leica' ? 1.35 : (st.brand === 'hasselblad' ? 1.2 : 1));
+      logoH = 24 * u * scale * brandScale;
+      var logoW = (st.showBrand && st.brand !== 'none') ? global.LG.Logos.measure(ctx, st.brand, logoH) : 0;
 
       var gapA = logoW ? nameSize * 0.55 : 0;
-      var gapB = logoW ? nameSize * 0.55 : 0;
-      var contentW = leftW + gapA + logoW + gapB + rightW;
+      var gapB = logoW ? nameSize * 1.05 : 0;
+      var contentW = st.logoRight
+        ? leftW + gapA + rightW + gapB + logoW
+        : leftW + gapA + logoW + gapB + rightW;
 
       var margin = 38 * u;
       var panelW = Math.max(W * (st.widthPct / 100), contentW + padX * 2);
@@ -150,6 +153,14 @@
       else if (st.align === 'right') panelX = W - margin - panelW;
       var bottomGap = (st.bottomGap === undefined ? 3.8 : st.bottomGap) * W / 100;
       var panelY = Math.max(0, H - bottomGap - panelH);
+      var rightEdge = panelX + panelW - padX;
+      if (st.logoRight && logoW > 0) {
+        var maxEdge = rightEdge - logoW - gapB;
+        var minEdge = panelX + padX + leftW + gapA + rightW;
+        var travel = Math.max(0, maxEdge - minEdge);
+        var lfx = Math.max(0, Math.min(100, st.logoPosPct === undefined ? 100 : st.logoPosPct)) / 100;
+        rightEdge = maxEdge - travel * (1 - lfx);
+      }
 
       result = {
         W: W, H: H, u: u, scale: scale,
@@ -175,12 +186,12 @@
         params: {
           text: text.params, font: fMeta, size: metaSize, tracking: metaSize * 0.02,
           width: paramsW, asc: paramsM.asc, on: paramsOn,
-          x: panelX + panelW - padX, baseline: 0, slant: slant * 0.7
+          x: rightEdge, baseline: 0, slant: slant * 0.7
         },
         meta: {
           text: text.meta, font: fMeta, size: metaSize, tracking: metaSize * 0.02,
           width: metaW, asc: metaM.asc, on: metaOn,
-          x: panelX + panelW - padX, baseline: 0, slant: slant * 0.7
+          x: rightEdge, baseline: 0, slant: slant * 0.7
         },
         logo: {
           id: st.brand, w: logoW, h: logoH, x: 0, y: 0, on: logoW > 0
@@ -205,14 +216,18 @@
         if (metaOn) { result.meta.baseline = y + metaM.asc; }
       }
 
-      // Logo 居中于左右两块之间的空档
       if (logoW) {
         var leftEnd = panelX + padX + leftW;
         var rightStart = panelX + panelW - padX - rightW;
         var space = rightStart - leftEnd;
-        var gx = leftEnd + gapA;
-        if (space > logoW + gapA + gapB * 0.4) {
-          gx = leftEnd + (space - logoW) / 2;
+        var gx;
+        if (st.logoRight) {
+          gx = rightEdge + gapB;
+        } else {
+          var lfx2 = Math.max(0, Math.min(100, st.logoPosPct === undefined ? 100 : st.logoPosPct)) / 100;
+          var from = leftEnd + gapA;
+          var span = rightStart - gapB - from - logoW;
+          gx = span > 0 ? from + span * lfx2 : from;
         }
         result.logo.x = gx;
         result.logo.y = cy - logoH / 2;
@@ -263,7 +278,7 @@
       ctx.shadowColor = 'rgba(0,0,0,0.38)';
       ctx.shadowBlur = Math.max(1.5, sl * 4.4);
       ctx.shadowOffsetY = sl * 1.0;
-      ctx.fillStyle = 'rgba(255,255,255,0.985)';
+      ctx.fillStyle = st.textColor || 'rgba(255,255,255,0.985)';
       ctx.font = n.font;
       drawTracked(ctx, n.text, n.x, n.baseline, n.tracking, n.slant);
       ctx.restore();
@@ -308,13 +323,19 @@
     mt.drawImage(mask, 0, 0);
     mt.globalCompositeOperation = 'source-atop';
     if (mode === 'liquid') {
-      mt.fillStyle = 'rgba(255,255,255,0.34)';
+      mt.save();
+      if (st.textColor) mt.globalAlpha = 0.58;
+      mt.fillStyle = st.textColor || 'rgba(255,255,255,0.34)';
       mt.fillRect(0, 0, bw, bh);
+      mt.restore();
       mt.fillStyle = 'rgba(158,210,255,0.10)';
       mt.fillRect(0, 0, bw, bh);
     } else {
-      mt.fillStyle = 'rgba(255,255,255,0.66)';
+      mt.save();
+      if (st.textColor) mt.globalAlpha = 0.76;
+      mt.fillStyle = st.textColor || 'rgba(255,255,255,0.66)';
       mt.fillRect(0, 0, bw, bh);
+      mt.restore();
       mt.fillStyle = 'rgba(226,238,255,0.14)';
       mt.fillRect(0, 0, bw, bh);
     }
@@ -378,7 +399,7 @@
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.38)';
       ctx.shadowBlur = shadowBlur * 0.7;
-      ctx.fillStyle = 'rgba(255,255,255,0.72)';
+      ctx.fillStyle = st.textColor || 'rgba(255,255,255,0.72)';
       ctx.font = s.font;
       drawTracked(ctx, s.text, s.x + s.dotR * 2 + s.dotGap, s.baseline, s.tracking, s.slant);
       ctx.restore();
@@ -390,7 +411,7 @@
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.38)';
       ctx.shadowBlur = shadowBlur * 0.7;
-      ctx.fillStyle = 'rgba(255,255,255,0.90)';
+      ctx.fillStyle = st.textColor || 'rgba(255,255,255,0.90)';
       ctx.font = p.font;
       var pw = trackedWidth(ctx, p.text, p.font, p.tracking);
       drawTracked(ctx, p.text, p.x - pw, p.baseline, p.tracking, p.slant);
@@ -402,7 +423,7 @@
       ctx.save();
       ctx.shadowColor = 'rgba(0,0,0,0.38)';
       ctx.shadowBlur = shadowBlur * 0.6;
-      ctx.fillStyle = 'rgba(255,255,255,0.62)';
+      ctx.fillStyle = st.textColor || 'rgba(255,255,255,0.62)';
       ctx.font = m.font;
       var mw = trackedWidth(ctx, m.text, m.font, m.tracking);
       drawTracked(ctx, m.text, m.x - mw, m.baseline, m.tracking, m.slant);
