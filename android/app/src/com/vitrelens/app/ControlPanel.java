@@ -63,7 +63,7 @@ class ControlPanel {
         // ── 01 水印内容
         LinearLayout c1 = page(content);
         textRow(c1, "相机名称", () -> st.name, s -> st.name = s, "OPPO Find X9 Ultra");
-        textRow(c1, "副标题", () -> st.subtitle, s -> st.subtitle = s, "哈苏影像 · 光影追寻");
+        textRow(c1, "副标题", () -> st.subtitle, s -> st.subtitle = s, "选填，留空则不显示");
         textRow(c1, "拍摄参数", () -> st.params, s -> st.params = s, "23mm ƒ/1.8 1/287s ISO50");
         textRow(c1, "时间 / 地点", () -> st.meta, s -> st.meta = s, "2026.10.26 12:06:26");
 
@@ -117,7 +117,9 @@ class ControlPanel {
                 p -> String.format(Locale.US, "%.1f", p));
 
         slider(c2, "Logo 位置", 0, 100, 1, () -> st.logoPosPct, v -> st.logoPosPct = v,
-                p -> Math.round(p) == 0 ? "贴名称" : (Math.round(p) == 100 ? "贴参数" : Math.round(p) + "%"));
+                p -> Math.round(p) == 0 ? "靠名称"
+                        : (Math.round(p) == 100 ? (st.logoRight ? "靠右" : "贴参数")
+                        : Math.round(p) + "%"));
         label(c2, "Logo 相对参数");
         segmented(c2, new String[]{"在左侧", "在右侧"},
                 () -> st.logoRight ? 1 : 0,

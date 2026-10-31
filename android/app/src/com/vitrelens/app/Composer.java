@@ -39,7 +39,9 @@ class Composer {
         // 亮度要在画玻璃之前量：玻璃本身会改变底色。顺带决定「不透明档」用白还是黑。
         if (st.autoText) {
             float lum = WatermarkPainter.measureLum(base, L);
-            L.darkText = lum > 0.62f;
+            // 手动 HSB 是用户的明确选择，不能再因为背景亮就乘暗；Logo 仍独立反色保证可见。
+            L.darkText = st.textHue < 0 && lum > 0.62f;
+            L.darkLogo = lum > 0.62f;
             st.themeDark = lum < 0.48f;
         }
 

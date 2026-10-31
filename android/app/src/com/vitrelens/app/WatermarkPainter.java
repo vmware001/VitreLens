@@ -24,7 +24,8 @@ class WatermarkPainter {
         String params = "";
         String meta = "";
 
-        boolean showSubtitle = false;
+        // 默认允许副标题；subtitle 为空时 layout 会当作未启用，不占任何空间
+        boolean showSubtitle = true;
         boolean showBrand = true;
         boolean showParams = true;
         boolean showMeta = true;
@@ -49,15 +50,15 @@ class WatermarkPainter {
         float posXPct = 50f;
         String align = "center";       // 已废弃，仅保留字段兼容旧预设
         String font = "sans";     // sans / condensed / serif / mono
-        String nameMaterial = "solid"; // liquid / frost / solid
+        String nameMaterial = "liquid"; // liquid / frost / solid
 
         float widthPct = 92f;
         /** Logo 尺寸，100% = 跟随字号 */
         float logoSizePct = 100f;
-        /** Logo 水平位置：0 = 紧贴名称，100 = 紧贴参数（默认）；logoRight 时此值不生效 */
+        /** Logo 水平位置：左侧模式在名称与参数间移动；右侧模式与参数一起左右移动 */
         float logoPosPct = 100f;
-        /** true = 把 logo 放到参数右侧 */
-        boolean logoRight = false;
+        /** true = 把 logo 放到参数右侧（默认） */
+        boolean logoRight = true;
         /** 已废弃，仅保留字段兼容 */
         String logoPos = "right";
         /** 玻璃高度（垂直长轴方向），100% = 刚好包住文字 */
@@ -66,7 +67,7 @@ class WatermarkPainter {
         float gapPct = 3.8f;
         float nameSize = 24f;          // 每 1000px 画幅
         float metaSize = 12.5f;
-        boolean italic = true;
+        boolean italic = false;
 
         // 玻璃（参数对齐 @specy/liquid-glass 的 GlassStyle）
         float ior = 1.46f;
@@ -129,8 +130,10 @@ class WatermarkPainter {
         boolean paramsOn, metaOn, subOn;
         float logoX, logoY, logoW, logoH;
         boolean logoOn;
-        /** 背景偏亮时改用深色文字（autoText 打开时才生效） */
+        /** 背景偏亮且文字为自动色时才改用深色文字；手动 HSB 绝不被它改写 */
         boolean darkText;
+        /** Logo 始终根据背景明暗反色，避免白色字标在亮背景上消失 */
+        boolean darkLogo;
         /** 文字主色（RGB，不含 alpha）；由 textHue 决定，没启用时是白 */
         int textRgb = 0xFFFFFF;
         /** logo 与参数之间的白色短竖线；sepX <= 0 表示不画 */
@@ -213,7 +216,10 @@ class WatermarkPainter {
             // 哈苏是 10:1 的横排字标，按普通字号算高度只有 0.1 倍，小到看不清
             // Logo 高度不跟「机型字号」走：调名字大小时图标跟着变很怪。
             // 固定以 24u 为基准（等于默认字号），再乘 logoSizePct。
-            float logoH = 24f * u * scale * (st.brand == 2 ? 1.2f : 1.0f) * (st.logoSizePct / 100f);
+            float brandScale = st.brand == 6 ? 1.45f       // Apple 在小尺寸预览中需要更大的轮廓
+                    : (st.brand == 1 ? 1.35f               // Leica 同理
+                    : (st.brand == 2 ? 1.2f : 1.0f));
+            float logoH = 24f * u * scale * brandScale * (st.logoSizePct / 100f);
             float logoW = st.showBrand ? logoWidth(st.brand, logoH) : 0;
 
             float gapA = logoW > 0 ? nameSize * 0.55f : 0;
@@ -309,9 +315,16 @@ class WatermarkPainter {
                 L.subX = panelX + L.padX;
             }
 
-            // 右侧块的右边界。logo 放在参数右边时，右对齐的应该是 logo，参数得左移
+            // 右侧块的右边界。Logo 在参数右边时，二者组成一个整体；
+            // logoPosPct 控制这个整体在剩余空间中的位置，而不是把 Logo 永远钉死在面板右缘。
             float rightEdge = panelX + panelW - L.padX;
-            if (st.logoRight && logoW > 0) rightEdge -= (logoW + gapB);
+            if (st.logoRight && logoW > 0) {
+                float maxEdge = rightEdge - logoW - gapB;
+                float minEdge = panelX + L.padX + leftW + gapA + rightW;
+                float travel = Math.max(0f, maxEdge - minEdge);
+                float lfx = Math.max(0f, Math.min(100f, st.logoPosPct)) / 100f;
+                rightEdge = maxEdge - travel * (1f - lfx);
+            }
 
             if (paramsOn || metaOn) {
                 float rightTop = cy - rightH / 2f;
@@ -421,7 +434,7 @@ class WatermarkPainter {
             c.restore();
         }
 
-        if (L.logoOn) drawLogo(c, st.brand, L.logoX, L.logoY, L.logoH, st.nameMaterial, L.darkText);
+        if (L.logoOn) drawLogo(c, st.brand, L.logoX, L.logoY, L.logoH, st.nameMaterial, L.darkLogo);
 
         // logo 与参数之间的分隔竖线
         if (L.sepX > 0) {
@@ -889,7 +902,7 @@ class WatermarkPainter {
         c.drawBitmap(b, null, dst, tint(0xFFFFFFFF));
     }
 
-    /** 蔡司标志的外框：比内容略大一圈的圆角矩形描边 */
+    /** 蔡司外框：顶部与两侧是矩形，底边向内部弯曲，模拟镜片的轮廓而不是普通矩形 */
     private static void drawLogoFrame(Canvas c, float x, float y, float w, float hh,
                                       String material, boolean dark) {
         float pad = hh * 0.24f;
@@ -908,7 +921,19 @@ class WatermarkPainter {
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(stroke);
         p.setColor(color);
-        c.drawRoundRect(r, rad, rad, p);
+        Path frame = new Path();
+        frame.moveTo(r.left + rad, r.top);
+        frame.lineTo(r.right - rad, r.top);
+        frame.quadTo(r.right, r.top, r.right, r.top + rad);
+        frame.lineTo(r.right, r.bottom);
+        // 底边中部向框内抬起：这是 ZEISS 标志区别于普通圆角矩形的关键轮廓
+        frame.cubicTo(r.right - r.width() * 0.20f, r.bottom - r.height() * 0.46f,
+                r.left + r.width() * 0.20f, r.bottom - r.height() * 0.46f,
+                r.left, r.bottom);
+        frame.lineTo(r.left, r.top + rad);
+        frame.quadTo(r.left, r.top, r.left + rad, r.top);
+        frame.close();
+        c.drawPath(frame, p);
     }
 
     private static RectF offset(RectF r, float dx, float dy) {

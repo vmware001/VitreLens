@@ -45,7 +45,8 @@ import re, io
 p = 'app/AndroidManifest.xml'
 s = io.open(p, encoding='utf-8').read()
 code = int(re.search(r'android:versionCode="(\d+)"', s).group(1)) + 1
-name = '1.%d' % (code - 1)
+# 2.x 从 versionCode 108（versionName 2.0）开始；以后每次构建递增小版本
+name = '2.%d' % (code - 108)
 s = re.sub(r'android:versionCode="\d+"', 'android:versionCode="%d"' % code, s, count=1)
 s = re.sub(r'android:versionName="[^"]*"', 'android:versionName="%s"' % name, s, count=1)
 io.open(p, 'w', encoding='utf-8', newline='\n').write(s)

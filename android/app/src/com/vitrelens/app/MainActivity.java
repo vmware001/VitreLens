@@ -47,7 +47,8 @@ public class MainActivity extends Activity {
 
     private static final int REQ_PICK = 1001;
     private static final int REQ_LOGO = 1002;
-    private static final int PREVIEW_MAX = 1400;
+    // 预览从 1400 提高到 2000：全图仍按 View 缩放，特写与高分辨率 Logo 不再明显发虚
+    private static final int PREVIEW_MAX = 2000;
 
     private ImageView preview, backdrop;
     /** 选中的照片列表（支持多选）；只有一个时缩略图条隐藏 */
