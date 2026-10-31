@@ -220,7 +220,7 @@ class ControlPanel {
                 () -> new boolean[]{keepOriginalVideo},
                 (i, on) -> keepOriginalVideo = on);
         hint(c4, "开启后只尝试硬件与 CPU 软件编解码，绝不降低分辨率；"
-                + "关闭时，两种方式都失败后才会降到 1280 / 864。CPU 编码可能很慢。");
+                + "关闭时硬件失败后直接降到 1280 / 864，避免额外等待 CPU 尝试。");
         slider(c4, "视频水印高度", -4, 14, 0.2f,
                 () -> st.videoGapShift, v -> st.videoGapShift = v,
                 p -> String.format(Locale.US, "%+.1f%%", p));

@@ -1278,3 +1278,17 @@ input[type="text"]:focus {
 @media (max-width: 760px) {
   .topbar-links { display: none; }
 }
+.label-short { display: none; }
+@media (max-width: 680px) {
+  .topbar { padding: 0 8px; gap: 6px; }
+  .topbar-actions { gap: 5px; flex-shrink: 0; }
+  .brand-text { gap: 0; }
+  .brand-text strong { font-size: 13px; }
+  #btnOpen { width: 33px; padding: 0; }
+  #btnOpen span { display: none; }
+  #btnExport .label-full { display: none; }
+  #btnExport .label-short { display: inline; }
+}
+@media (max-width: 480px) {
+  .brand-mark { display: none; }
+}
