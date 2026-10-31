@@ -1229,3 +1229,6 @@ input[type="text"]:focus {
   .insp-rail { margin-top: 8px; margin-bottom: 8px; }
   .insp-rail button { height: 42px; }
 }
+.project-links { display: grid; gap: 7px; margin: 14px 0 12px; }
+.project-links .btn { width: 100%; text-decoration: none; }
+.project-links .btn:hover { color: var(--acc); }
