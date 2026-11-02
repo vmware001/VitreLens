@@ -23,7 +23,7 @@ final class YuvConverter {
     /** 解码后的逐像素转换是 CPU 热点；按行并行，GL 合成仍留在原单线程队列。 */
     private static final java.util.concurrent.ExecutorService CPU_POOL =
             java.util.concurrent.Executors.newFixedThreadPool(
-                    Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors())), r -> {
+                    Math.max(2, Math.min(6, Runtime.getRuntime().availableProcessors())), r -> {
                         Thread t = new Thread(r, "vl-yuv");
                         t.setDaemon(true);
                         return t;
@@ -155,7 +155,7 @@ final class YuvConverter {
         int uRow = planes[1].getRowStride(), uPix = planes[1].getPixelStride();
         int vRow = planes[2].getRowStride(), vPix = planes[2].getPixelStride();
 
-        int workers = W * H >= 1000000 ? Math.max(2, Math.min(4,
+        int workers = W * H >= 1000000 ? Math.max(2, Math.min(6,
                 Runtime.getRuntime().availableProcessors())) : 1;
         if (workers == 1) {
             convertRows(yB, uB, vB, yRow, yPix, uRow, uPix, vRow, vPix,
@@ -269,7 +269,7 @@ final class YuvConverter {
             fx[x] = Math.max(0, Math.min(1024, Math.round(f * 1024)));
         }
 
-        int workers = dstW * dstH >= 500000 ? Math.max(2, Math.min(4,
+        int workers = dstW * dstH >= 500000 ? Math.max(2, Math.min(6,
                 Runtime.getRuntime().availableProcessors())) : 1;
         if (workers == 1) {
             convertRowsScaled(yB, uB, vB, yRow, yPix, uRow, uPix, vRow, vPix,

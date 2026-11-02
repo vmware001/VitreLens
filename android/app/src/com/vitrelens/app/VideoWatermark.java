@@ -226,13 +226,6 @@ class VideoWatermark {
         // 旋转前目标尺寸。降档时直接在 YUV 阶段降采样，避免每帧生成完整 8K ARGB。
         int convertW = resizeFrame ? (swapped ? outH : outW) : srcW;
         int convertH = resizeFrame ? (swapped ? outW : outH) : srcH;
-        Bitmap frameRaw = Bitmap.createBitmap(convertW, convertH, Bitmap.Config.ARGB_8888);
-        Bitmap frameWork = resizeFrame ? Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
-                : frameRaw;
-        int[] rowPixels = new int[convertW * convertH];
-        Canvas workCanvas = resizeFrame ? new Canvas(frameWork) : null;
-        Paint blitPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
-
         SurfaceBlitter blitter = new SurfaceBlitter(encSurface, outW, outH);
         lastBackendNote = (softwareCodec(dec.getName()) ? "CPU 解码" : "GPU 解码")
                 + " · " + composer.backendLabel()
@@ -245,7 +238,6 @@ class VideoWatermark {
         List<Sample> video = new ArrayList<Sample>();
         MediaFormat encFmt = null;
         int done = 0;
-        int guard = 0;
         WatermarkPainter.Style vst = st.copy();
         if (motionPhotoLayout) {
             // 仅动态照片需要取景补偿：它的静态照片与视频段视野不同。
@@ -257,101 +249,14 @@ class VideoWatermark {
                 vst.gapPct, vst.widthPct, st.gapPct, st.widthPct));
 
         try {
-            boolean inputDone = false, outputDone = false;
-            long lastRenderedPts = -1;
-            while (!outputDone) {
-                if (++guard > totalFrames * 4 + 2000) {
-                    throw new RuntimeException("解码卡住了（已处理 " + done + " 帧）");
-                }
-                if (!inputDone) {
-                    int ii = dec.dequeueInputBuffer(10000);
-                    if (ii >= 0) {
-                        ByteBuffer ib = dec.getInputBuffer(ii);
-                        long need = ex.getSampleSize();
-                        if (need > 0 && ib != null && need > ib.capacity()) {
-                            throw new RuntimeException("关键帧 " + need + " 字节超过解码器输入缓冲 "
-                                    + ib.capacity() + "，这台设备的解码器吃不下");
-                        }
-                        int size = ex.readSampleData(ib, 0);
-                        if (size < 0) {
-                            dec.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-                            inputDone = true;
-                        } else {
-                            long pts = ex.getSampleTime();
-                            int fl = ex.getSampleFlags() == MediaExtractor.SAMPLE_FLAG_SYNC
-                                    ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
-                            dec.queueInputBuffer(ii, 0, size, pts, fl);
-                            ex.advance();
-                        }
-                    }
-                }
-
-                MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
-                int oi = dec.dequeueOutputBuffer(bi, 10000);
-                if (oi >= 0) {
-                    boolean eos = (bi.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
-                    long pts = bi.presentationTimeUs;
-                    boolean dup = (pts == lastRenderedPts);
-                    // 预卷帧只解码不合成：解码器需要它才能解出后续帧，但成片里不该有
-                    boolean preRoll = pts < videoEditUs;
-
-                    if (!dup && !preRoll) {
-                        Image img = null;
-                        try {
-                            img = dec.getOutputImage(oi);
-                        } catch (Exception ignored) { }
-                        Box ok = new Box();
-                        int nPlanes = -1;
-                        if (img != null) {
-                            nPlanes = img.getPlanes() == null ? 0 : img.getPlanes().length;
-                            long yuvStart = System.nanoTime();
-                            try {
-                                if (convertW == srcW && convertH == srcH) {
-                                    ok.v = yuv.toBitmap(img, frameRaw, rowPixels, srcW, srcH);
-                                } else {
-                                    ok.v = yuv.toBitmapScaled(img, frameRaw, rowPixels,
-                                            srcW, srcH, convertW, convertH);
-                                }
-                            } finally {
-                                img.close();
-                            }
-                            yuvNs += System.nanoTime() - yuvStart;
-                        }
-                        if (ok.v) {
-                            Bitmap work = frameRaw;
-                            if (resizeFrame) {
-                                workCanvas.drawColor(0xFF000000);
-                                workCanvas.save();
-                                workCanvas.translate(outW / 2f, outH / 2f);
-                                workCanvas.rotate(rotation);
-                                float rw = swapped ? convertH : convertW;
-                                float rh = swapped ? convertW : convertH;
-                                float fit = Math.min(outW / rw, outH / rh);
-                                workCanvas.scale(fit, fit);
-                                workCanvas.translate(-convertW / 2f, -convertH / 2f);
-                                workCanvas.drawBitmap(frameRaw, 0, 0, blitPaint);
-                                workCanvas.restore();
-                                work = frameWork;
-                            }
-                            // 水印（和照片导出完全同一套逻辑）
-                            long composeStart = System.nanoTime();
-                            composer.composeOn(work, outW, outH, vst);
-                            composeNs += System.nanoTime() - composeStart;
-                            long blitStart = System.nanoTime();
-                            blitter.draw(work, pts);
-                            blitNs += System.nanoTime() - blitStart;
-                            lastRenderedPts = pts;
-                            done++;
-                            if (cb != null && (done % 3 == 0 || done == totalFrames)) {
-                                cb.onProgress(done, totalFrames, lastBackendNote + " · 加水印");
-                            }
-                        }
-                    }
-                    dec.releaseOutputBuffer(oi, false);
-                    if (eos) outputDone = true;
-                }
-                encFmt = drain(enc, video, encFmt);
-            }
+            FrameStats fs = processParallel(dec, ex, yuv, composer, blitter, enc, video, encFmt,
+                    srcW, srcH, outW, outH, rotation, swapped, convertW, convertH, resizeFrame,
+                    vst, totalFrames, videoEditUs, cb);
+            done = fs.done;
+            encFmt = fs.encFmt;
+            yuvNs = fs.yuvNs;
+            composeNs = fs.composeNs;
+            blitNs = fs.blitNs;
 
             if (cb != null) cb.onProgress(totalFrames, totalFrames, lastBackendNote + " · 收尾编码");
             enc.signalEndOfInputStream();
@@ -384,7 +289,7 @@ class VideoWatermark {
                 }
             }
         } catch (Throwable t) {
-            Log.e(TAG, "解码循环中断：已合成 " + done + " 帧，guard=" + guard, t);
+            Log.e(TAG, "解码循环中断：已合成 " + done + " 帧", t);
             throw t;
         } finally {
             try { blitter.release(); } catch (Exception ignored) { }
@@ -394,8 +299,6 @@ class VideoWatermark {
             try { enc.release(); } catch (Exception ignored) { }
             try { encSurface.release(); } catch (Exception ignored) { }
             try { ex.release(); } catch (Exception ignored) { }
-            frameRaw.recycle();
-            if (frameWork != frameRaw) frameWork.recycle();
         }
 
         Log.i(TAG, "编码完成：视频样本 " + video.size() + " 个，音频样本 " + audio.size() + " 个");
@@ -490,6 +393,185 @@ class VideoWatermark {
         Log.i(TAG, "转码性能：" + lastTimingNote);
         Log.i(TAG, "MP4 封装完成：" + out.length() + " 字节，" + lastColorNote);
         return out.length();
+    }
+
+    /** 两个帧槽循环复用：生产线程做解码/YUV，GL 线程做合成/编码。 */
+    private static class FrameSlot {
+        Bitmap raw, work;
+        int[] pixels;
+        Canvas canvas;
+        Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        long ptsUs;
+        boolean eos;
+
+        FrameSlot() { eos = true; }
+
+        FrameSlot(int cw, int ch, int outW, int outH, boolean resize) {
+            raw = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
+            pixels = new int[cw * ch];
+            work = resize ? Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888) : raw;
+            canvas = resize ? new Canvas(work) : null;
+        }
+
+        void recycle() {
+            if (raw != null) raw.recycle();
+            if (work != null && work != raw) work.recycle();
+        }
+    }
+
+    private static class FrameStats {
+        int done;
+        long yuvNs, composeNs, blitNs;
+        MediaFormat encFmt;
+    }
+
+    private static FrameStats processParallel(MediaCodec dec, MediaExtractor ex, YuvConverter yuv,
+            Composer composer, SurfaceBlitter blitter, MediaCodec enc, List<Sample> video,
+            MediaFormat initialFmt, int srcW, int srcH, int outW, int outH, int rotation,
+            boolean swapped, int convertW, int convertH, boolean resizeFrame,
+            WatermarkPainter.Style vst, int totalFrames, long videoEditUs, Progress cb) throws Exception {
+        final java.util.concurrent.ArrayBlockingQueue<FrameSlot> free =
+                new java.util.concurrent.ArrayBlockingQueue<FrameSlot>(2);
+        final java.util.concurrent.ArrayBlockingQueue<FrameSlot> ready =
+                new java.util.concurrent.ArrayBlockingQueue<FrameSlot>(2);
+        long bytesPerSlot = 8L * convertW * convertH + 4L * outW * outH;
+        final boolean dual = bytesPerSlot * 2 <= 384L * 1024 * 1024;
+        final FrameSlot slotA = new FrameSlot(convertW, convertH, outW, outH, resizeFrame);
+        final FrameSlot slotB = dual
+                ? new FrameSlot(convertW, convertH, outW, outH, resizeFrame) : null;
+        final FrameSlot eosSlot = new FrameSlot();
+        free.put(slotA);
+        if (slotB != null) free.put(slotB);
+        Log.i(TAG, "帧流水线：" + (dual ? "双缓冲" : "单缓冲（控制 8K 内存）")
+                + "，单槽约 " + (bytesPerSlot / 1048576) + "MB");
+        final java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        final FrameStats stats = new FrameStats();
+        stats.encFmt = initialFmt;
+
+        Thread producer = new Thread(() -> {
+            long yuvTotal = 0;
+            try {
+                boolean inputDone = false, outputDone = false;
+                int guard = 0;
+                long lastQueuedPts = -1;
+                while (!outputDone) {
+                    if (++guard > totalFrames * 4 + 2000) {
+                        throw new RuntimeException("解码卡住了");
+                    }
+                    if (!inputDone) {
+                        int ii = dec.dequeueInputBuffer(10000);
+                        if (ii >= 0) {
+                            ByteBuffer ib = dec.getInputBuffer(ii);
+                            long need = ex.getSampleSize();
+                            if (need > 0 && ib != null && need > ib.capacity()) {
+                                throw new RuntimeException("关键帧超过解码器输入缓冲");
+                            }
+                            int size = ex.readSampleData(ib, 0);
+                            if (size < 0) {
+                                dec.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                                inputDone = true;
+                            } else {
+                                long pts = ex.getSampleTime();
+                                int fl = ex.getSampleFlags() == MediaExtractor.SAMPLE_FLAG_SYNC
+                                        ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                                dec.queueInputBuffer(ii, 0, size, pts, fl);
+                                ex.advance();
+                            }
+                        }
+                    }
+
+                    MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
+                    int oi = dec.dequeueOutputBuffer(bi, 10000);
+                    if (oi < 0) continue;
+                    boolean eos = (bi.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                    long pts = bi.presentationTimeUs;
+                    boolean skip = pts == lastQueuedPts || pts < videoEditUs;
+                    Image img = null;
+                    FrameSlot slot = null;
+                    boolean converted = false;
+                    try {
+                        if (!skip) {
+                            try { img = dec.getOutputImage(oi); } catch (Exception ignored) { }
+                            if (img != null) {
+                                slot = free.take();
+                                long t0 = System.nanoTime();
+                                try {
+                                    if (convertW == srcW && convertH == srcH) {
+                                        converted = yuv.toBitmap(img, slot.raw, slot.pixels, srcW, srcH);
+                                    } else {
+                                        converted = yuv.toBitmapScaled(img, slot.raw, slot.pixels,
+                                                srcW, srcH, convertW, convertH);
+                                    }
+                                } finally {
+                                    yuvTotal += System.nanoTime() - t0;
+                                    img.close();
+                                }
+                            }
+                        }
+                    } finally {
+                        dec.releaseOutputBuffer(oi, false);
+                    }
+                    if (converted && slot != null) {
+                        slot.ptsUs = pts;
+                        ready.put(slot);
+                        lastQueuedPts = pts;
+                    } else if (slot != null) {
+                        free.put(slot);
+                    }
+                    if (eos) outputDone = true;
+                }
+            } catch (Throwable t) {
+                failure.compareAndSet(null, t);
+            } finally {
+                stats.yuvNs = yuvTotal;
+                try { ready.put(eosSlot); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }
+        }, "vl-decode");
+        producer.start();
+
+        try {
+            while (true) {
+                FrameSlot slot = ready.take();
+                if (slot.eos) break;
+                Bitmap work = slot.raw;
+                if (resizeFrame) {
+                    slot.canvas.drawColor(0xFF000000);
+                    slot.canvas.save();
+                    slot.canvas.translate(outW / 2f, outH / 2f);
+                    slot.canvas.rotate(rotation);
+                    float rw = swapped ? convertH : convertW;
+                    float rh = swapped ? convertW : convertH;
+                    float fit = Math.min(outW / rw, outH / rh);
+                    slot.canvas.scale(fit, fit);
+                    slot.canvas.translate(-convertW / 2f, -convertH / 2f);
+                    slot.canvas.drawBitmap(slot.raw, 0, 0, slot.paint);
+                    slot.canvas.restore();
+                    work = slot.work;
+                }
+                long cs = System.nanoTime();
+                composer.composeOn(work, outW, outH, vst);
+                stats.composeNs += System.nanoTime() - cs;
+                long bs = System.nanoTime();
+                blitter.draw(work, slot.ptsUs);
+                stats.blitNs += System.nanoTime() - bs;
+                stats.done++;
+                if (cb != null && (stats.done % 3 == 0 || stats.done == totalFrames)) {
+                    cb.onProgress(stats.done, totalFrames, lastBackendNote + " · 双缓冲流水线");
+                }
+                stats.encFmt = drain(enc, video, stats.encFmt);
+                free.put(slot);
+            }
+            producer.join();
+            if (failure.get() != null) throw new RuntimeException(failure.get());
+            stats.encFmt = drain(enc, video, stats.encFmt);
+            return stats;
+        } finally {
+            if (producer.isAlive()) producer.join(5000);
+            slotA.recycle();
+            if (slotB != null) slotB.recycle();
+        }
     }
 
     private static boolean softwareCodec(String name) {
