@@ -63,7 +63,7 @@ struct SliderRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.white.opacity(0.85))
                 Spacer()
-                Text(String(format: "%.\(decimals)f\(suffix)", value))
+                Text(String(format: "%.\(decimals)f", value) + suffix)
                     .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.75))
                     .padding(.horizontal, 7)

@@ -31,6 +31,9 @@ final class AppModel: ObservableObject {
 
         // CI / 设计校对用：直接塞一张合成测试图，省去手动选照片
         if let demo = ProcessInfo.processInfo.environment["VITRELENS_DEMO"], demo != "0" {
+            style.name = "OPPO Find X10 Pro Max"
+            style.params = "23mm f/1.8 1/287s ISO50"
+            style.meta = "2026.11.03 12:04"
             if let img = Snapshot.syntheticPhoto(size: CGSize(width: 1200, height: 1600)) {
                 source = img
                 refreshPreview()
