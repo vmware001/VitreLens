@@ -241,10 +241,23 @@ enum WatermarkCanvas {
         [.font: font, .foregroundColor: color, .kern: CGFloat(tracking * size)]
     }
 
+    /// 独立的文字 alpha 遮罩。文字与渐变分别成图后再合成，
+    /// 避免 NSAttributedString 绘制时改写当前上下文的混合状态。
+    private static func glyphMask(_ text: String, size: Double, tracking: Double,
+                                  font: UIFont, box: CGSize) -> UIImage {
+        let s = NSAttributedString(string: text,
+                                   attributes: glyphAttributes(text, size: size, tracking: tracking,
+                                                               font: font, color: .white))
+        let fmt = UIGraphicsImageRendererFormat.default()
+        fmt.scale = 1
+        fmt.opaque = false
+        return UIGraphicsImageRenderer(size: box, format: fmt).image { _ in
+            s.draw(at: CGPoint(x: 2, y: 4))
+        }
+    }
+
     /// 把文字画成「渐变填充」的图：先铺渐变，再用 destinationIn 抠出字形。
-    ///
-    /// 不能用 `clip(to:mask:)` —— 位图上下文的 y 轴向下，
-    /// 遮罩图按设备坐标解释，字会被上下翻过来。
+    /// 不使用 clip(to:mask:)，以免位图坐标系把遮罩上下翻转。
     private static func gradientGlyph(_ text: String, size: Double, tracking: Double, font: UIFont,
                                       rgb: Int) -> UIImage? {
         let s = NSAttributedString(string: text,
@@ -255,6 +268,7 @@ enum WatermarkCanvas {
         let padX: CGFloat = 2, padY: CGFloat = 4
         let box = CGSize(width: ceil(textSize.width) + padX * 2,
                          height: ceil(textSize.height) + padY * 2)
+        let mask = glyphMask(text, size: size, tracking: tracking, font: font, box: box)
         let fmt = UIGraphicsImageRendererFormat.default()
         fmt.scale = 1
         fmt.opaque = false
@@ -274,9 +288,7 @@ enum WatermarkCanvas {
                                      end: CGPoint(x: 0, y: y1),
                                      options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
             }
-            c.setBlendMode(.destinationIn)
-            s.draw(at: CGPoint(x: padX, y: padY))
-            c.setBlendMode(.normal)
+            mask.draw(in: CGRect(origin: .zero, size: box), blendMode: .destinationIn, alpha: 1)
         }
     }
 
