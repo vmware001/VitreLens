@@ -34,6 +34,15 @@ android/local-logos/*
 !android/local-logos/README.md
 android/app/res/drawable-nodpi/logo_*.png
 
+# ── iOS：SwiftPM 构建产物与 Xcode 用户态文件
+ios/*/.build/
+ios/*/.swiftpm/
+ios/**/DerivedData/
+ios/**/*.xcuserstate
+ios/**/*.xcworkspace/xcuserdata/
+ios/**/*.xcodeproj/xcuserdata/
+ios/**/build/
+
 # 删除的文件统一挪到这里（不用 rm -r，避免触发危险命令授权）
 .trash/
 
