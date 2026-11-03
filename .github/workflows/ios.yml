@@ -1,0 +1,54 @@
+name: iOS
+
+# 公开仓库的 macOS 运行器免费，因此没有 Mac 也能拿到真实的编译结果：
+#   core  —— swift test，跑 VitreLensCore 的单元测试与 Android 对拍
+#   app   —— xcodegen 生成工程后 xcodebuild 编译模拟器版本，能抓出 SwiftUI/Metal 的编译错误
+on:
+  push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "ios/**"
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: Core tests
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: swift test
+        working-directory: ios/VitreLensCore
+        run: swift test
+
+  app:
+    name: Build iOS app
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build for simulator
+        working-directory: ios
+        run: |
+          xcodebuild -project VitreLens.xcodeproj \
+            -scheme VitreLens \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
