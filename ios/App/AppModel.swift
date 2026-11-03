@@ -28,6 +28,20 @@ final class AppModel: ObservableObject {
 
     init() {
         GlassPreset.standard.apply(to: &style)
+
+        // CI / 设计校对用：直接塞一张合成测试图，省去手动选照片
+        if let demo = ProcessInfo.processInfo.environment["VITRELENS_DEMO"], demo != "0" {
+            if let img = Snapshot.syntheticPhoto(size: CGSize(width: 1200, height: 1600)) {
+                source = img
+                refreshPreview()
+            }
+            switch demo {
+            case "layout": page = .layout
+            case "glass": page = .glass
+            case "export": page = .export
+            default: page = .content
+            }
+        }
     }
 
     func apply(_ p: GlassPreset) {

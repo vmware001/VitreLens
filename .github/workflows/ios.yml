@@ -77,6 +77,14 @@ jobs:
           mkdir -p artifacts
           cp -v "$CONTAINER"/Documents/*.jpg artifacts/ || true
           cp -v "$CONTAINER"/Documents/backend.txt artifacts/ || true
+
+          # 界面截图：分别停在内容页和玻璃页
+          for PAGE in content glass; do
+            xcrun simctl terminate "$DEV" com.vitrelens.app || true
+            SIMCTL_CHILD_VITRELENS_DEMO=$PAGE xcrun simctl launch "$DEV" com.vitrelens.app || true
+            sleep 6
+            xcrun simctl io "$DEV" screenshot "artifacts/ui-$PAGE.png" || true
+          done
           ls -lh artifacts
 
       - name: Upload preset renders
