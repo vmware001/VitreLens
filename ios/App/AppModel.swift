@@ -57,19 +57,55 @@ final class AppModel: ObservableObject {
 
     /// 任何参数变化后重新合成预览。预览与实际导出走同一套 WatermarkCanvas，
     /// 只是尺寸不同——这是 Android 端一直坚持的做法，避免「预览好看、导出不对」。
-    func refreshPreview() {
-        guard let source else {
+    ///
+    /// 渲染放到后台并做 60ms 防抖：拖动滑块时每次变化都同步渲染 1400px 的图，
+    /// 主线程会被卡住，手感直接废掉。
+    private var previewTask: Task<Void, Never>?
+    private var previewGeneration = 0
+
+    func refreshPreview(immediate: Bool = false) {
+        guard let img = source else {
             preview = nil
             return
         }
+        let st = style
+        previewGeneration += 1
+        let generation = previewGeneration
+        previewTask?.cancel()
+
         let maxSide: CGFloat = 1400
-        let w = source.size.width, h = source.size.height
-        let k = min(1, maxSide / max(w, h))
-        let size = CGSize(width: (w * k).rounded(), height: (h * k).rounded())
-        preview = WatermarkCanvas.composite(image: source,
-                                            canvasSize: size,
-                                            style: style,
-                                            measurer: measurer)
+        let k = min(1, maxSide / max(img.size.width, img.size.height))
+        let size = CGSize(width: (img.size.width * k).rounded(),
+                          height: (img.size.height * k).rounded())
+
+        previewTask = Task { [weak self] in
+            if !immediate {
+                try? await Task.sleep(nanoseconds: 60_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            let measurer = CoreTextMeasurer()
+            let out = await Task.detached(priority: .userInitiated) {
+                WatermarkCanvas.composite(image: img, canvasSize: size,
+                                          style: st, measurer: measurer)
+            }.value
+            guard !Task.isCancelled, let self, generation == self.previewGeneration else { return }
+            self.preview = out
+        }
+    }
+
+    /// 导出结果直接写入系统相册
+    func saveToPhotos() {
+        guard let url = exportURL else { return }
+        busy = true
+        Task {
+            do {
+                try await Exporter.saveToPhotos(url)
+                message = "已保存到相册"
+            } catch {
+                message = "保存失败：\(error.localizedDescription)"
+            }
+            busy = false
+        }
     }
 
     func load(item: PhotosPickerItem?) async {

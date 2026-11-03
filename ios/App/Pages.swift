@@ -349,11 +349,22 @@ struct ExportPage: View {
 
             if let url = model.exportURL {
                 Button {
+                    model.saveToPhotos()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "photo.badge.arrow.down")
+                        Text("保存到相册")
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle(enabled: !model.busy))
+                .disabled(model.busy)
+
+                Button {
                     shareURL = url
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "tray.and.arrow.down")
-                        Text("保存到相册 / 分享")
+                        Image(systemName: "square.and.arrow.up.on.square")
+                        Text("分享")
                     }
                 }
                 .buttonStyle(PrimaryButtonStyle())
