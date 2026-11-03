@@ -55,3 +55,32 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      - name: Render glass presets on simulator
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          DEV=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone 1[5-7]( Pro)?' || echo "iPhone 16")
+          echo "使用模拟器: $DEV"
+          xcrun simctl boot "$DEV" || true
+          xcrun simctl bootstatus "$DEV" -b
+          APP=$(find build/Build/Products -name "VitreLens.app" -maxdepth 3 | head -1)
+          echo "安装 $APP"
+          xcrun simctl install "$DEV" "$APP"
+          SIMCTL_CHILD_VITRELENS_SNAPSHOT=1 xcrun simctl launch "$DEV" com.vitrelens.app || true
+          # 等渲染完成
+          for i in $(seq 1 40); do
+            CONTAINER=$(xcrun simctl get_app_container "$DEV" com.vitrelens.app data 2>/dev/null || true)
+            if [ -n "$CONTAINER" ] && [ -f "$CONTAINER/Documents/backend.txt" ]; then break; fi
+            sleep 2
+          done
+          mkdir -p artifacts
+          cp -v "$CONTAINER"/Documents/*.jpg artifacts/ || true
+          cp -v "$CONTAINER"/Documents/backend.txt artifacts/ || true
+          ls -lh artifacts
+
+      - name: Upload preset renders
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-glass-presets
+          path: ios/artifacts
