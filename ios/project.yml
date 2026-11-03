@@ -1,0 +1,46 @@
+name: VitreLens
+
+options:
+  bundleIdPrefix: com.vitrelens
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  VitreLensCore:
+    path: VitreLensCore
+
+targets:
+  VitreLens:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+    dependencies:
+      - package: VitreLensCore
+        product: VitreLensCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vitrelens.app
+        PRODUCT_NAME: VitreLens
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: VitreLens
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSPhotoLibraryUsageDescription: 需要访问相册，以便选择要加水印的照片。
+        NSPhotoLibraryAddUsageDescription: 需要写入相册，以便保存导出结果。
