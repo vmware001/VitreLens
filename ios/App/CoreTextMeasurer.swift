@@ -1,4 +1,5 @@
 import UIKit
+import CoreText
 import VitreLensCore
 
 /// 用与 Android 完全相同的随包字体实现核心库的 `TextMeasuring`。
@@ -7,7 +8,20 @@ import VitreLensCore
 /// 但不再因为 SF Pro / Roboto 字形不同而改变水印宽度与换行收敛。
 struct CoreTextMeasurer: TextMeasuring {
 
+    /// UIAppFonts 是主注册方式；这里兼容 Xcode 资源平铺/保留目录两种拷贝形式。
+    /// 重复注册只会返回已注册错误，不影响字体使用。
+    private static let registerBundledFonts: Void = {
+        for name in ["inter", "oswald", "playfair", "jetbrainsmono"] {
+            let url = Bundle.main.url(forResource: name, withExtension: "ttf")
+                ?? Bundle.main.url(forResource: name, withExtension: "ttf", subdirectory: "Fonts")
+            if let url {
+                CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+            }
+        }
+    }()
+
     func font(size: Double, role: FontRole, bold: Bool) -> UIFont {
+        _ = Self.registerBundledFonts
         let s = CGFloat(size)
         let postScriptName: String
         switch role {
