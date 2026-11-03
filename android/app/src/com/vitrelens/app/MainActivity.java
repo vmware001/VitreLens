@@ -1732,8 +1732,11 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     }
 
     /**
-     * 默认：硬件原尺寸 → 硬件 1280 → 硬件 864，避免为注定不支持的大尺寸浪费时间尝试 CPU。
+     * 默认：硬件原尺寸 → 硬件 1920 → 硬件 1280 → 硬件 864，避免为注定不支持的大尺寸浪费时间尝试 CPU。
      * 开启 keepOriginalVideo：硬件原尺寸 → CPU 原尺寸，任何情况下都不改变输出尺寸。
+     *
+     * 中间必须有 1080p 这一档：4K/8K 素材一旦失败就直接掉到 1280，成片体积和清晰度会
+     * 断崖式下降（用户看到的就是「文件小了很多」）。
      */
     private void transcodeWithPolicy(File input, File output, WatermarkPainter.Style st,
                                      ProgressDialog pd, boolean motionPhotoLayout) throws Exception {
@@ -1741,7 +1744,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         // {最长边上限, codecMode}；codecMode 1 表示 CPU 软件编解码
         final int[][] attempts = keep
                 ? new int[][]{{0, 0}, {0, 1}}
-                : new int[][]{{0, 0}, {1280, 0}, {864, 0}};
+                : new int[][]{{0, 0}, {1920, 0}, {1280, 0}, {864, 0}};
         Throwable last = null;
         for (int i = 0; i < attempts.length; i++) {
             final int limit = attempts[i][0];

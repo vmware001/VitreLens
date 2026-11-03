@@ -159,6 +159,8 @@ class VideoWatermark {
         // 源视频的真实色彩特性。之前一律按 BT.601 + SDR 处理，
         // 遇到 BT.2020/HLG 的源（OPPO 的动态照片就是）会整体偏色发灰，而且不会报错。
         final int sourceTransfer = getInt(vf, MediaFormat.KEY_COLOR_TRANSFER, 0);
+        final long sourceBitrate = Math.max(0, getInt(vf, MediaFormat.KEY_BIT_RATE, 0));
+        final long sourcePixels = (long) srcW * srcH;
         final boolean dolbySource = "video/dolby-vision".equalsIgnoreCase(vMime);
         final boolean hdrSource = isHdrTransfer(sourceTransfer) || dolbySource;
         // 恢复 HDR 输出：有 HEVC 能力时保留源 HDR 信号，否则才回退 SDR。
@@ -263,6 +265,22 @@ class VideoWatermark {
         if (fps <= 0 || fps > 120) fps = (int) Math.round(totalFrames / durSec);
         if (fps <= 0) fps = 30;
         fps = Math.max(10, Math.min(60, fps));
+
+        // 不少容器（本机这个杜比视界文件就是）不暴露 KEY_BIT_RATE，也没有 btrt 盒。
+        // 这时用「文件大小 ÷ 时长」估算，否则 88Mbps 的素材会按 40Mbps 重编码，
+        // 成片只有原片一半大小，细节和暗部层次明显丢失。
+        // 传入的 in 已经是纯视频轨（实况照片的 MP4 段已提前取出），因此偏差很小。
+        long sourceBits = sourceBitrate;
+        boolean bitrateEstimated = false;
+        if (sourceBits <= 0) {
+            long audioGuess = aFmt != null ? 192_000L : 0L;
+            long est = (long) (in.length() * 8.0 / durSec) - audioGuess;
+            if (est > 0) {
+                sourceBits = est;
+                bitrateEstimated = true;
+            }
+        }
+
         // 计数已走到文件尾。重新建立解码游标，不依赖该容器的 seekTo(0)。
         ex.release();
         ex = new MediaExtractor();
@@ -271,6 +289,9 @@ class VideoWatermark {
 
         Log.i(TAG, String.format("视频 %dx%d → %dx%d, %d 帧, %.2fs, %dfps, rot=%d",
                 srcW, srcH, outW, outH, totalFrames, durSec, fps, rotation));
+        if (bitrateEstimated) {
+            Log.i(TAG, "源码率未标注，按文件大小估算为 " + (sourceBits / 1000000) + "Mbps");
+        }
         if (cb != null) cb.onProgress(0, totalFrames, "准备编码器");
 
         // ── 3. 编码器。优先保持原分辨率；只有设备明确拒绝时才等比降档。
@@ -278,19 +299,40 @@ class VideoWatermark {
         final int originalW = outW, originalH = outH;
         MediaCodec enc = null;
         Throwable configureError = null;
-        // 原尺寸 → 最长边 1280 → 最长边 864。逐级尝试，不在第一台设备上就牺牲清晰度。
-        final int configureAttempts = allowDownscale ? 3 : 1;
+        // 原尺寸 → 最长边 1920 → 1280 → 864。逐级尝试，不在第一台设备上就牺牲清晰度。
+        // 中间保留 1080p 一档：4K 素材直接被砍到 720p 的话，成片体积和观感都会断崖式下降。
+        final int[] ladder = {0, 1920, 1280, 864};
+        final int configureAttempts = allowDownscale ? ladder.length : 1;
         for (int attempt = 0; attempt < configureAttempts && enc == null; attempt++) {
-            int limit = attempt == 0 ? 0 : (attempt == 1 ? 1280 : 864);
+            int limit = ladder[Math.min(attempt, ladder.length - 1)];
             float k = limit == 0 ? 1f : Math.min(1f, limit / (float) Math.max(originalW, originalH));
             outW = align2(Math.round(originalW * k));
             outH = align2(Math.round(originalH * k));
             MediaCodec candidate = null;
+            Log.i(TAG, "编码尝试 " + outW + "x" + outH + "（第 " + (attempt + 1) + " 档）");
             try {
                 candidate = createEncoder(encMime, codecMode == 1);
-                candidate.configure(encoderFormat(encMime, outW, outH, fps, hdrOut, sourceTransfer),
-                        null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                int bitrate = bitrateFor(outW, outH, fps, sourceBits, sourcePixels, encMime);
+                try {
+                    candidate.configure(encoderFormat(encMime, outW, outH, fps, hdrOut,
+                            sourceTransfer, bitrate), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                } catch (Throwable bitrateError) {
+                    // 码率超出该编码器能力时不能直接降分辨率：先退回按像素估算再试一次，
+                    // 只有分辨率本身不被接受时才继续往下走降档。
+                    final int fallback = bitrateFor(outW, outH, fps, 0, 0, encMime);
+                    if (fallback >= bitrate) throw bitrateError;
+                    Log.w(TAG, "编码器不接受 " + (bitrate / 1000000) + "Mbps，退回 "
+                            + (fallback / 1000000) + "Mbps");
+                    try { candidate.release(); } catch (Throwable ignored) { }
+                    candidate = createEncoder(encMime, codecMode == 1);
+                    candidate.configure(encoderFormat(encMime, outW, outH, fps, hdrOut,
+                            sourceTransfer, fallback), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                    bitrate = fallback;
+                }
                 enc = candidate;
+                Log.i(TAG, "编码成功：" + outW + "x" + outH + " @" + (bitrate / 1000000)
+                        + "Mbps（源码率 " + (sourceBits / 1000000) + "Mbps"
+                        + (bitrateEstimated ? "，估算" : "") + "）");
                 if (attempt > 0) Log.w(TAG, "编码器不接受原尺寸，等比降为 " + outW + "x" + outH);
             } catch (Throwable t) {
                 configureError = t;
@@ -472,12 +514,21 @@ class VideoWatermark {
             mux.release();
         }
 
-        lastColorNote = !hdrSource
+        String colorNote = !hdrSource
                 ? "视频 " + yuv.label
                 : (hdrOut
                     ? "视频 " + yuv.label + " → 保留 HDR（HEVC / "
                         + (sourceTransfer == 6 ? "PQ" : "HLG") + "）"
                     : "视频 " + yuv.label + " → 已色调映射为 SDR（BT.709）");
+        if (dolbySource) {
+            // 杜比视界的动态元数据是逐帧 RPU，绑在原始像素上；只要重新编码就必然失效，
+            // 也不能通过 MediaMuxer 写回 dvvC 盒。必须如实告诉用户，而不是含糊成"HDR"。
+            colorNote += hdrOut
+                    ? "\n杜比视界无法在重编码中保留动态元数据；已输出 "
+                        + (sourceTransfer == 6 ? "PQ" : "HLG") + " HDR"
+                    : "\n杜比视界无法在重编码中保留动态元数据；已输出 SDR";
+        }
+        lastColorNote = colorNote;
         lastTimingNote = String.format(java.util.Locale.US,
                 "总耗时 %.1fs｜YUV %.1fs｜玻璃 %.1fs｜编码上传 %.1fs",
                 (System.nanoTime() - transcodeStartNs) / 1e9,
@@ -870,10 +921,10 @@ class VideoWatermark {
     }
 
     private static MediaFormat encoderFormat(String mime, int w, int h, int fps,
-                                             boolean hdrOut, int sourceTransfer) {
+                                             boolean hdrOut, int sourceTransfer, int bitrate) {
         MediaFormat ef = MediaFormat.createVideoFormat(mime, w, h);
         ef.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(w, h, fps));
+        ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
         ef.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         ef.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
         try {
@@ -890,13 +941,55 @@ class VideoWatermark {
         return ef;
     }
 
-    private static int bitrateFor(int w, int h, int fps) {
-        // 约 0.13 bit/像素/帧。高分辨率玻璃边缘和细文字需要更高码率，
-        // 4K30 不再被旧的 16 Mbps 上限截断；40 Mbps 上限兼顾兼容性。
-        long b = (long) ((double) w * h * fps * 0.13);
-        if (b < 4_000_000L) b = 4_000_000L;
-        if (b > 40_000_000L) b = 40_000_000L;
-        return (int) b;
+    /**
+     * 目标码率。
+     *
+     * 只按像素估算（0.13 bit/像素/帧）会系统性地压掉高码率素材：4K60 的杜比视界/HLG
+     * 原片常在 80Mbps 以上，按公式算出来 64Mbps 再被旧上限截到 40Mbps，成片只有原片的
+     * 一半不到，细节和暗部层次明显退化——用户看到的就是「文件小了很多」。
+     *
+     * 因此：输出分辨率接近原片时，以源码率为基准（85%）取较大者；降档输出不套用源码率，
+     * 否则 8K 降到 720p 也会被要求 80Mbps。
+     */
+    private static int bitrateFor(int w, int h, int fps, long sourceBitrate,
+                                  long sourcePixels, String mime) {
+        long px = (long) w * h;
+        long target = (long) ((double) px * fps * 0.13);
+
+        boolean sameScale = sourcePixels > 0 && px >= sourcePixels * 0.8;
+        if (sourceBitrate > 0 && sameScale) {
+            long fromSource = (long) (sourceBitrate * 0.85);
+            if (fromSource > target) target = fromSource;
+        }
+
+        if (target < 4_000_000L) target = 4_000_000L;
+        // 编码器自己还有上限，超出会 configure 失败或静默压回去
+        long cap = encoderBitrateMax(mime);
+        if (cap <= 0) cap = 120_000_000L;
+        if (cap > 160_000_000L) cap = 160_000_000L;
+        if (target > cap) target = cap;
+        return (int) target;
+    }
+
+    /** 该 MIME 编码器声明支持的码率上限（取所有编码器的最大值）；拿不到返回 0 */
+    private static long encoderBitrateMax(String mime) {
+        long max = 0;
+        try {
+            MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+            for (MediaCodecInfo ci : list.getCodecInfos()) {
+                if (!ci.isEncoder()) continue;
+                for (String t : ci.getSupportedTypes()) {
+                    if (!t.equalsIgnoreCase(mime)) continue;
+                    android.util.Range<Integer> r = ci.getCapabilitiesForType(t)
+                            .getVideoCapabilities().getBitrateRange();
+                    if (r != null && r.getUpper() != null && r.getUpper() > max) {
+                        max = r.getUpper();
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return max;
     }
 
     private static int align2(int v) {
