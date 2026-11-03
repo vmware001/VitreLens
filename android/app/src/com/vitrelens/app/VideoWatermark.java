@@ -51,6 +51,51 @@ class VideoWatermark {
         long ptsUs;
         boolean video;
         int codecFlags;   // MediaCodec 的 BUFFER_FLAG_*，视频轨第一帧必须是 KEY_FRAME
+        SampleSpool spool;
+        long offset;
+        int size;
+    }
+
+    /** 视频编码样本落盘，避免长视频把全部 byte[] 留在 Java 堆。 */
+    private static class SampleSpool {
+        final File file;
+        final java.io.RandomAccessFile raf;
+
+        SampleSpool(File file) throws Exception {
+            this.file = file;
+            if (file.exists() && !file.delete()) throw new RuntimeException("清不掉样本缓存");
+            raf = new java.io.RandomAccessFile(file, "rw");
+        }
+
+        void write(Sample s, ByteBuffer src) throws Exception {
+            s.spool = this;
+            s.offset = raf.getFilePointer();
+            s.size = src.remaining();
+            byte[] chunk = new byte[256 * 1024];
+            while (src.hasRemaining()) {
+                int n = Math.min(chunk.length, src.remaining());
+                src.get(chunk, 0, n);
+                raf.write(chunk, 0, n);
+            }
+        }
+
+        void read(Sample s, ByteBuffer dst) throws Exception {
+            raf.seek(s.offset);
+            byte[] chunk = new byte[256 * 1024];
+            int left = s.size;
+            while (left > 0) {
+                int n = Math.min(chunk.length, left);
+                raf.readFully(chunk, 0, n);
+                dst.put(chunk, 0, n);
+                left -= n;
+            }
+            dst.flip();
+        }
+
+        void close() {
+            try { raf.close(); } catch (Exception ignored) { }
+            if (file.exists() && !file.delete()) file.deleteOnExit();
+        }
     }
 
     /**
@@ -137,27 +182,34 @@ class VideoWatermark {
         List<Sample> audio = new ArrayList<Sample>();
         MediaFormat aFmt = null;
         if (aIdx >= 0) {
-            aFmt = ex.getTrackFormat(aIdx);
-            ex.selectTrack(aIdx);
-            ByteBuffer bb = ByteBuffer.allocateDirect(64 * 1024);
-            while (true) {
-                bb.clear();
-                int n = ex.readSampleData(bb, 0);
-                if (n <= 0) break;
-                Sample s = new Sample();
-                s.data = new byte[n];
-                bb.position(0);
-                bb.get(s.data, 0, n);
-                s.ptsUs = ex.getSampleTime();
-                audio.add(s);
-                if (!ex.advance()) break;
+            // 某些带杜比视界/额外 data 轨的 MP4，音轨读完再 seek 会让视频轨计数变 0。
+            // 音频使用独立 extractor，视频轨的 seek/样本游标完全不受影响。
+            MediaExtractor ax = new MediaExtractor();
+            ax.setDataSource(in.getAbsolutePath());
+            try {
+                aFmt = ax.getTrackFormat(aIdx);
+                ax.selectTrack(aIdx);
+                ByteBuffer bb = ByteBuffer.allocateDirect(64 * 1024);
+                while (true) {
+                    bb.clear();
+                    int n = ax.readSampleData(bb, 0);
+                    if (n <= 0) break;
+                    Sample s = new Sample();
+                    s.data = new byte[n];
+                    bb.position(0);
+                    bb.get(s.data, 0, n);
+                    s.ptsUs = ax.getSampleTime();
+                    audio.add(s);
+                    if (!ax.advance()) break;
+                }
+            } finally {
+                ax.release();
             }
-            ex.unselectTrack(aIdx);
         }
 
         // ── 2. 数帧、估算时长（决定编码器帧率与码率）
         ex.selectTrack(vIdx);
-        ex.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+        // 新 extractor 选中轨道后天然位于首样本；部分 DV 文件 seekTo(0) 反而会得到 -1。
         int totalFrames = 0;
         long lastPts = 0;
         long totalBytes = 0;
@@ -170,7 +222,40 @@ class VideoWatermark {
             if (!ex.advance()) break;
         }
         if (totalFrames <= 0) {
+            // 部分 DV/厂商 MP4 的样本时间轴无法被 MediaExtractor 枚举，但帧数和时长可读。
+            android.media.MediaMetadataRetriever mmr = new android.media.MediaMetadataRetriever();
+            try {
+                mmr.setDataSource(in.getAbsolutePath());
+                String fc = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT);
+                String du = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION);
+                if (fc != null) totalFrames = Integer.parseInt(fc);
+                if (du != null) lastPts = Long.parseLong(du) * 1000L;
+                if (totalFrames > 0) {
+                    Log.i(TAG, "样本时间轴不可枚举，使用元数据帧数=" + totalFrames + "，解码时补齐 PTS");
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "读取视频帧数元数据失败：" + t);
+            } finally {
+                try { mmr.release(); } catch (Throwable ignored) { }
+            }
+        }
+        if (totalFrames <= 0) {
             ex.release();
+            if (dolbySource) {
+                // 某些 Android 版本看到 DV 配置盒后拒绝枚举整个轨道的样本。
+                // 仅修改临时副本中的盒类型，视频码流逐字节不动，由 HEVC 解码基层。
+                File compat = new File(out.getPath() + ".hevc-compat.mp4");
+                try {
+                    int patched = makeHevcCompatCopy(in, compat);
+                    if (patched > 0) {
+                        Log.i(TAG, "DV 轨道无法枚举，改用 HEVC 兼容副本，修复盒数=" + patched);
+                        return transcode(ctx, compat, out, composer, st, cb, maxDimension,
+                                codecMode, allowDownscale, motionPhotoLayout);
+                    }
+                } finally {
+                    if (compat.exists()) compat.delete();
+                }
+            }
             throw new RuntimeException("视频没有可解码的帧");
         }
         double durSec = Math.max(0.2, lastPts / 1e6);
@@ -178,7 +263,11 @@ class VideoWatermark {
         if (fps <= 0 || fps > 120) fps = (int) Math.round(totalFrames / durSec);
         if (fps <= 0) fps = 30;
         fps = Math.max(10, Math.min(60, fps));
-        ex.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC);
+        // 计数已走到文件尾。重新建立解码游标，不依赖该容器的 seekTo(0)。
+        ex.release();
+        ex = new MediaExtractor();
+        ex.setDataSource(in.getAbsolutePath());
+        ex.selectTrack(vIdx);
 
         Log.i(TAG, String.format("视频 %dx%d → %dx%d, %d 帧, %.2fs, %dfps, rot=%d",
                 srcW, srcH, outW, outH, totalFrames, durSec, fps, rotation));
@@ -237,6 +326,7 @@ class VideoWatermark {
         long transcodeStartNs = System.nanoTime();
         long yuvNs = 0, composeNs = 0, blitNs = 0;
         List<Sample> video = new ArrayList<Sample>();
+        SampleSpool spool = new SampleSpool(new File(out.getPath() + ".samples"));
         MediaFormat encFmt = null;
         int done = 0;
         WatermarkPainter.Style vst = st.copy();
@@ -250,9 +340,9 @@ class VideoWatermark {
                 vst.gapPct, vst.widthPct, st.gapPct, st.widthPct));
 
         try {
-            FrameStats fs = processParallel(dec, ex, yuv, composer, blitter, enc, video, encFmt,
+            FrameStats fs = processParallel(dec, ex, yuv, composer, blitter, enc, video, spool, encFmt,
                     srcW, srcH, outW, outH, rotation, swapped, convertW, convertH, resizeFrame,
-                    vst, totalFrames, videoEditUs, cb);
+                    vst, totalFrames, videoEditUs, fps, cb);
             done = fs.done;
             encFmt = fs.encFmt;
             yuvNs = fs.yuvNs;
@@ -274,11 +364,10 @@ class VideoWatermark {
                         ob.position(bi.offset);
                         ob.limit(bi.offset + bi.size);
                         Sample s = new Sample();
-                        s.data = new byte[bi.size];
-                        ob.get(s.data);
                         s.ptsUs = bi.presentationTimeUs;
                         s.video = true;
                         s.codecFlags = bi.flags;
+                        spool.write(s, ob);
                         video.add(s);
                     }
                     enc.releaseOutputBuffer(oi, false);
@@ -339,7 +428,7 @@ class VideoWatermark {
         }
         mux.start();
         long vBytes = 0, aBytes = 0;
-        for (Sample s : all) { if (s.video) vBytes += s.data.length; else aBytes += s.data.length; }
+        for (Sample s : all) { if (s.video) vBytes += s.size; else aBytes += s.data.length; }
         Log.i(TAG, "轨道 v=" + vTrack + " a=" + aTrack
                 + " 视频样本 " + video.size() + " 个/" + vBytes + " 字节"
                 + " 音频 " + audio.size() + " 个/" + aBytes + " 字节"
@@ -362,17 +451,18 @@ class VideoWatermark {
                 if (track < 0) continue;
                 long t = (s.video ? s.ptsUs - videoEditUs : s.ptsUs) - origin;
                 if (t < 0) t = 0;
-                wbi.set(0, s.data.length, t, s.codecFlags);
+                int sampleSize = s.video ? s.size : s.data.length;
+                wbi.set(0, sampleSize, t, s.codecFlags);
                 try {
                     // 必须用直接缓冲：MediaMuxer 底层的 GetDirectBufferAddress 对堆缓冲
                     // 会失败，而且**不一定抛异常**，表现就是样本被静默丢掉、成片 0 帧。
-                    ByteBuffer bb = ByteBuffer.allocateDirect(s.data.length);
-                    bb.put(s.data);
-                    bb.flip();
+                    ByteBuffer bb = ByteBuffer.allocateDirect(sampleSize);
+                    if (s.spool != null) s.spool.read(s, bb);
+                    else { bb.put(s.data); bb.flip(); }
                     mux.writeSampleData(track, bb, wbi);
                     if (s.video) vWritten++; else aWritten++;
                 } catch (Throwable e) {
-                    Log.e(TAG, "写入样本失败 track=" + track + " size=" + s.data.length + " pts=" + t, e);
+                    Log.e(TAG, "写入样本失败 track=" + track + " size=" + sampleSize + " pts=" + t, e);
                     throw e;
                 }
             }
@@ -394,6 +484,7 @@ class VideoWatermark {
                 yuvNs / 1e9, composeNs / 1e9, blitNs / 1e9);
         Log.i(TAG, "转码性能：" + lastTimingNote);
         Log.i(TAG, "MP4 封装完成：" + out.length() + " 字节，" + lastColorNote);
+        spool.close();
         return out.length();
     }
 
@@ -429,9 +520,9 @@ class VideoWatermark {
 
     private static FrameStats processParallel(MediaCodec dec, MediaExtractor ex, YuvConverter yuv,
             Composer composer, SurfaceBlitter blitter, MediaCodec enc, List<Sample> video,
-            MediaFormat initialFmt, int srcW, int srcH, int outW, int outH, int rotation,
+            SampleSpool spool, MediaFormat initialFmt, int srcW, int srcH, int outW, int outH, int rotation,
             boolean swapped, int convertW, int convertH, boolean resizeFrame,
-            WatermarkPainter.Style vst, int totalFrames, long videoEditUs, Progress cb) throws Exception {
+            WatermarkPainter.Style vst, int totalFrames, long videoEditUs, int fps, Progress cb) throws Exception {
         final java.util.concurrent.ArrayBlockingQueue<FrameSlot> free =
                 new java.util.concurrent.ArrayBlockingQueue<FrameSlot>(2);
         final java.util.concurrent.ArrayBlockingQueue<FrameSlot> ready =
@@ -457,6 +548,8 @@ class VideoWatermark {
                 boolean inputDone = false, outputDone = false;
                 int guard = 0;
                 long lastQueuedPts = -1;
+                long syntheticPts = 0;
+                final long frameUs = Math.max(1, Math.round(1000000.0 / Math.max(1, fps)));
                 while (!outputDone) {
                     if (++guard > totalFrames * 4 + 2000) {
                         throw new RuntimeException("解码卡住了");
@@ -475,6 +568,8 @@ class VideoWatermark {
                                 inputDone = true;
                             } else {
                                 long pts = ex.getSampleTime();
+                                if (pts < 0) pts = syntheticPts;
+                                syntheticPts += frameUs;
                                 int fl = ex.getSampleFlags() == MediaExtractor.SAMPLE_FLAG_SYNC
                                         ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
                                 dec.queueInputBuffer(ii, 0, size, pts, fl);
@@ -524,6 +619,7 @@ class VideoWatermark {
                     if (eos) outputDone = true;
                 }
             } catch (Throwable t) {
+                Log.e(TAG, "解码生产线程失败", t);
                 failure.compareAndSet(null, t);
             } finally {
                 stats.yuvNs = yuvTotal;
@@ -562,13 +658,16 @@ class VideoWatermark {
                 if (cb != null && (stats.done % 3 == 0 || stats.done == totalFrames)) {
                     cb.onProgress(stats.done, totalFrames, lastBackendNote + " · 双缓冲流水线");
                 }
-                stats.encFmt = drain(enc, video, stats.encFmt);
+                stats.encFmt = drain(enc, video, stats.encFmt, spool);
                 free.put(slot);
             }
             producer.join();
             if (failure.get() != null) throw new RuntimeException(failure.get());
-            stats.encFmt = drain(enc, video, stats.encFmt);
+            stats.encFmt = drain(enc, video, stats.encFmt, spool);
             return stats;
+        } catch (Throwable t) {
+            Log.e(TAG, "合成/编码线程失败", t);
+            throw t;
         } finally {
             if (producer.isAlive()) producer.join(5000);
             slotA.recycle();
@@ -609,20 +708,90 @@ class VideoWatermark {
         return MediaCodec.createByCodecName(name);
     }
 
+    /** 把 DV 配置盒改成 free，兼容只接受普通 HEVC 的 MediaExtractor；不碰 mdat 码流。 */
+    private static int makeHevcCompatCopy(File in, File out) throws Exception {
+        long moovFrom = -1, moovTo = -1, ftypFrom = -1, ftypTo = -1;
+        java.io.RandomAccessFile raf = new java.io.RandomAccessFile(in, "r");
+        try {
+            long len = raf.length(), pos = 0;
+            byte[] h = new byte[16];
+            while (pos + 8 <= len) {
+                raf.seek(pos);
+                raf.readFully(h, 0, 8);
+                long size = ((h[0] & 0xffL) << 24) | ((h[1] & 0xffL) << 16)
+                        | ((h[2] & 0xffL) << 8) | (h[3] & 0xffL);
+                String type = new String(h, 4, 4, java.nio.charset.StandardCharsets.US_ASCII);
+                int header = 8;
+                if (size == 1) {
+                    raf.readFully(h, 8, 8);
+                    size = 0;
+                    for (int i = 8; i < 16; i++) size = (size << 8) | (h[i] & 0xffL);
+                    header = 16;
+                } else if (size == 0) {
+                    size = len - pos;
+                }
+                if (size < header || pos + size > len) break;
+                if ("moov".equals(type)) { moovFrom = pos; moovTo = pos + size; }
+                if ("ftyp".equals(type)) { ftypFrom = pos; ftypTo = pos + size; }
+                pos += size;
+            }
+        } finally {
+            raf.close();
+        }
+        if (moovFrom < 0) return 0;
+
+        FileInputStream src = new FileInputStream(in);
+        FileOutputStream dst = new FileOutputStream(out);
+        int patched = 0;
+        try {
+            byte[] buf = new byte[4 * 1024 * 1024];
+            long base = 0;
+            int n;
+            while ((n = src.read(buf)) >= 0) {
+                if (n == 0) continue;
+                for (int i = 0; i + 4 <= n; i++) {
+                    long at = base + i;
+                    if (at >= moovFrom && at + 4 <= moovTo
+                            && ((buf[i] == 'd' && buf[i + 1] == 'v'
+                            && (buf[i + 2] == 'v' || buf[i + 2] == 'c') && buf[i + 3] == 'C'))) {
+                        buf[i] = 'f'; buf[i + 1] = 'r'; buf[i + 2] = 'e'; buf[i + 3] = 'e';
+                        patched++;
+                    } else if (at >= ftypFrom && at + 4 <= ftypTo
+                            && buf[i] == 'd' && buf[i + 1] == 'b' && buf[i + 2] == 'y' && buf[i + 3] == '1') {
+                        buf[i] = 'm'; buf[i + 1] = 'p'; buf[i + 2] = '4'; buf[i + 3] = '2';
+                        patched++;
+                    }
+                }
+                dst.write(buf, 0, n);
+                base += n;
+            }
+            dst.flush();
+        } finally {
+            src.close();
+            dst.close();
+        }
+        return patched;
+    }
+
     /** 按优先顺序挑解码器：先系统默认（真机通常是硬解），configure 失败就换下一个 */
     static MediaCodec openDecoder(String mime, MediaFormat fmt) {
         return openDecoder(mime, fmt, false);
     }
 
     static MediaCodec openDecoder(String mime, MediaFormat fmt, boolean software) {
+        final boolean dolby = "video/dolby-vision".equalsIgnoreCase(mime);
         List<String> names = new ArrayList<String>();
+        names.add(mime);
+        // 杜比视界 profile 8 等兼容文件的 BL 可由普通 HEVC 解码器读取。
+        // 没有 DV 专用解码器时，不能把“找不到 video/dolby-vision”当作整个文件不可解码。
+        // 不先插通用 video/hevc 包装器；直接尝试下面枚举出的具体 HEVC 解码器。
         try {
             MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
             for (MediaCodecInfo ci : list.getCodecInfos()) {
                 if (ci.isEncoder() || (software && !softwareCodec(ci.getName()))) continue;
                 for (String t : ci.getSupportedTypes()) {
-                    if (t.equalsIgnoreCase(mime)) {
-                        names.add(ci.getName());
+                    if (t.equalsIgnoreCase(mime) || (dolby && t.equalsIgnoreCase("video/hevc"))) {
+                        if (!names.contains(ci.getName())) names.add(ci.getName());
                         break;
                     }
                 }
@@ -630,25 +799,36 @@ class VideoWatermark {
         } catch (Throwable t) {
             Log.w(TAG, "枚举解码器失败：" + t);
         }
-        if (names.isEmpty()) {
-            if (software) throw new RuntimeException("设备没有 " + mime + " 软件解码器");
-            names.add(mime);   // 交给系统按 mime 选
-        }
 
         StringBuilder tried = new StringBuilder();
         for (String n : names) {
             MediaCodec c = null;
+            boolean hevcFallback = dolby && !mime.equals(n);
+            String originalMime = null;
             try {
-                c = mime.equals(n) ? MediaCodec.createDecoderByType(mime)
-                                   : MediaCodec.createByCodecName(n);
+                c = n.startsWith("video/") ? MediaCodec.createDecoderByType(n)
+                                           : MediaCodec.createByCodecName(n);
+                if (hevcFallback) {
+                    originalMime = fmt.getString(MediaFormat.KEY_MIME);
+                    fmt.setString(MediaFormat.KEY_MIME, "video/hevc");
+                    // profile=256 / csd-2 / bl_compatibility_id 属于 DV 私有配置，
+                    // 普通 HEVC 解码器会因此在 start 前后进入 Released 状态。
+                    fmt.removeKey("profile");
+                    fmt.removeKey("level");
+                    fmt.removeKey("csd-2");
+                    fmt.removeKey("bl_compatibility_id");
+                }
+                if (hevcFallback) Log.i(TAG, "HEVC 兼容配置：" + fmt);
                 c.configure(fmt, null, null, 0);
-                Log.i(TAG, "解码器：" + n);
+                Log.i(TAG, "解码器：" + n + (hevcFallback ? "（杜比视界 HEVC 基层）" : ""));
                 return c;
             } catch (Throwable t) {
                 tried.append(n).append("(").append(t.getMessage()).append(") ");
                 if (c != null) {
                     try { c.release(); } catch (Exception ignored) { }
                 }
+            } finally {
+                if (originalMime != null) fmt.setString(MediaFormat.KEY_MIME, originalMime);
             }
         }
         throw new RuntimeException("没有可用的视频解码器：" + tried);
@@ -656,8 +836,8 @@ class VideoWatermark {
 
 
     /** 拉取编码器输出，返回（可能更新过的）输出格式 */
-    private static MediaFormat drain(MediaCodec enc, List<Sample> sink, MediaFormat known)
-            throws Exception {
+    private static MediaFormat drain(MediaCodec enc, List<Sample> sink, MediaFormat known,
+                                     SampleSpool spool) throws Exception {
         while (true) {
             MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
             int oi = enc.dequeueOutputBuffer(bi, 0);
@@ -673,11 +853,10 @@ class VideoWatermark {
                     ob.position(bi.offset);
                     ob.limit(bi.offset + bi.size);
                     Sample s = new Sample();
-                    s.data = new byte[bi.size];
-                    ob.get(s.data);
                     s.ptsUs = bi.presentationTimeUs;
                     s.video = true;
                     s.codecFlags = bi.flags;
+                    spool.write(s, ob);
                     sink.add(s);
                 }
             }

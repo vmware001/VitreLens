@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.vitrelens.app"
-    android:versionCode="138"
-    android:versionName="2.30">
+    android:versionCode="147"
+    android:versionName="2.39">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34" />
 
