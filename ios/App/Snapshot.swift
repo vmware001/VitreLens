@@ -31,6 +31,20 @@ enum Snapshot {
             }
         }
 
+        // 三种文字材质各出一张，用来核对渐变/描边是否与 Android 一致
+        for material in ["liquid", "frost", "solid"] {
+            var st = WatermarkStyle()
+            st.name = "OPPO Find X10 Pro Max"
+            st.params = "23mm f/1.8 1/287s ISO50"
+            st.meta = "2026.11.03 12:04"
+            st.nameMaterial = material
+            GlassPreset.standard.apply(to: &st)
+            let out = WatermarkCanvas.composite(image: bg, canvasSize: size, style: st, measurer: CoreTextMeasurer())
+            if let data = out.jpegData(compressionQuality: 0.94) {
+                try? data.write(to: dir.appendingPathComponent("material-\(material).jpg"))
+            }
+        }
+
         // 未应用任何样式的一张，作为对照
         if let data = bg.jpegData(compressionQuality: 0.94) {
             try? data.write(to: dir.appendingPathComponent("source.jpg"))

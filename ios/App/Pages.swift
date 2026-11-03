@@ -211,6 +211,14 @@ struct LayoutPage: View {
             }
             .tint(.white.opacity(0.8))
 
+            SectionLabel(text: "文字材质")
+            Picker("文字材质", selection: $model.style.nameMaterial) {
+                Text("液态玻璃").tag("liquid")
+                Text("磨砂玻璃").tag("frost")
+                Text("不透明").tag("solid")
+            }
+            .pickerStyle(.segmented)
+
             Divider().overlay(Color.white.opacity(0.08))
 
             SectionLabel(text: "字体")

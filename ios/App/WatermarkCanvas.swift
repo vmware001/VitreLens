@@ -132,16 +132,27 @@ enum WatermarkCanvas {
 
         if !st.name.isEmpty {
             let f = measurer.font(size: L.nameSize, role: role(st.font), bold: true)
-            draw(st.name,
-                 x: L.nameX,
-                 baseline: L.nameBaseline,
-                 fontSize: L.nameSize,
-                 tracking: 0.026,
-                 font: f,
-                 color: textColor,
-                 alpha: 1,
-                 slant: L.slant,
-                 shadow: shadow)
+            switch st.nameMaterial {
+            case "liquid":
+                drawLiquidName(st.name, x: L.nameX, baseline: L.nameBaseline,
+                               size: L.nameSize, tracking: 0.026, font: f,
+                               slant: L.slant, rgb: L.textRgb)
+            case "frost":
+                drawFrostName(st.name, x: L.nameX, baseline: L.nameBaseline,
+                              size: L.nameSize, tracking: 0.026, font: f,
+                              slant: L.slant, rgb: L.textRgb)
+            default:
+                draw(st.name,
+                     x: L.nameX,
+                     baseline: L.nameBaseline,
+                     fontSize: L.nameSize,
+                     tracking: 0.026,
+                     font: f,
+                     color: textColor,
+                     alpha: 1,
+                     slant: L.slant,
+                     shadow: shadow)
+            }
         }
 
         if L.subOn {
@@ -208,6 +219,153 @@ enum WatermarkCanvas {
 
     private static func role(_ name: String) -> FontRole {
         FontRole(rawValue: name) ?? .sans
+    }
+
+    // MARK: - 文字材质（对齐 Android 的 drawLiquidText / drawFrostText）
+
+    /// shade：t>0 向白色靠，t<0 压暗。与 Android `shade()` 同义。
+    private static func shade(_ rgb: Int, _ t: Double) -> UIColor {
+        var r = Double((rgb >> 16) & 0xFF)
+        var g = Double((rgb >> 8) & 0xFF)
+        var b = Double(rgb & 0xFF)
+        if t >= 0 {
+            r += (255 - r) * t; g += (255 - g) * t; b += (255 - b) * t
+        } else {
+            r *= 1 + t; g *= 1 + t; b *= 1 + t
+        }
+        return UIColor(red: r / 255, green: g / 255, blue: b / 255, alpha: 1)
+    }
+
+    private static func glyphAttributes(_ text: String, size: Double, tracking: Double,
+                                        font: UIFont, color: UIColor) -> [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: color, .kern: CGFloat(tracking * size)]
+    }
+
+    /// 把文字画到一个纯 alpha 遮罩上，用来裁切渐变
+    private static func glyphMask(_ text: String, size: Double, tracking: Double, font: UIFont) -> CGImage? {
+        let s = NSAttributedString(string: text,
+                                   attributes: glyphAttributes(text, size: size, tracking: tracking,
+                                                               font: font, color: .white))
+        let box = CGSize(width: ceil(s.size().width) + 4, height: ceil(s.size().height) + 8)
+        guard box.width > 0, box.height > 0 else { return nil }
+        let fmt = UIGraphicsImageRendererFormat.default()
+        fmt.scale = 1
+        fmt.opaque = false
+        return UIGraphicsImageRenderer(size: box, format: fmt).image { _ in
+            s.draw(at: CGPoint(x: 2, y: 4))
+        }.cgImage
+    }
+
+    /// 液态玻璃字：柔光投影 + 纵向渐变主体 + 三层细描边
+    private static func drawLiquidName(_ text: String, x: Double, baseline: Double,
+                                       size: Double, tracking: Double, font: UIFont,
+                                       slant: Double, rgb: Int) {
+        guard let c = UIGraphicsGetCurrentContext() else { return }
+        let top = CGFloat(baseline) - font.ascender
+
+        // 1) 柔光投影
+        let shadowAttrs: [NSAttributedString.Key: Any] = {
+            var a = glyphAttributes(text, size: size, tracking: tracking, font: font,
+                                    color: UIColor.black.withAlphaComponent(0.22))
+            let sh = NSShadow()
+            sh.shadowColor = UIColor.black.withAlphaComponent(0.22)
+            sh.shadowBlurRadius = CGFloat(max(1.2, size * 0.09))
+            sh.shadowOffset = CGSize(width: 0, height: CGFloat(size * 0.035))
+            a[.shadow] = sh
+            return a
+        }()
+
+        c.saveGState()
+        c.translateBy(x: CGFloat(x), y: top)
+        if slant != 0 { c.concatenate(CGAffineTransform(a: 1, b: 0, c: CGFloat(-slant), d: 1, tx: 0, ty: 0)) }
+        NSAttributedString(string: text, attributes: shadowAttrs).draw(at: .zero)
+        c.restoreGState()
+
+        // 2) 渐变主体：用 alpha 遮罩裁切后铺渐变
+        if let mask = glyphMask(text, size: size, tracking: tracking, font: font) {
+            let box = CGRect(x: 0, y: 0, width: mask.width, height: mask.height)
+            c.saveGState()
+            c.translateBy(x: CGFloat(x) - 2, y: top - 4)
+            if slant != 0 { c.concatenate(CGAffineTransform(a: 1, b: 0, c: CGFloat(-slant), d: 1, tx: 0, ty: 0)) }
+            c.clip(to: box, mask: mask)
+
+            let ascent = Double(font.ascender)
+            // Android：从 -0.74×字号（上方）渐变到 -0.02×字号（贴近基线）
+            let y0 = CGFloat(ascent - size * 0.74) + 4
+            let y1 = CGFloat(ascent - size * 0.02) + 4
+            let colors = [shade(rgb, 0.55).cgColor,
+                          shade(rgb, 0.10).cgColor,
+                          shade(rgb, -0.18).cgColor] as CFArray
+            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                  colors: colors, locations: [0, 0.46, 1]) {
+                c.drawLinearGradient(g,
+                                     start: CGPoint(x: 0, y: y0),
+                                     end: CGPoint(x: 0, y: y1),
+                                     options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            c.restoreGState()
+        }
+
+        // 3) 三层描边：暖色边、白色高光、冷色低光
+        strokeText(text, x: x, top: top, size: size, tracking: tracking, font: font, slant: slant,
+                   color: shade(rgb, 0.25).withAlphaComponent(0.30),
+                   width: max(0.8, size * 0.016), dy: size * 0.012)
+        strokeText(text, x: x, top: top, size: size, tracking: tracking, font: font, slant: slant,
+                   color: UIColor.white.withAlphaComponent(0.55),
+                   width: max(0.7, size * 0.012), dy: -size * 0.004)
+        strokeText(text, x: x, top: top, size: size, tracking: tracking, font: font, slant: slant,
+                   color: UIColor(red: 0.62, green: 0.78, blue: 1.0, alpha: 0.24),
+                   width: max(0.7, size * 0.010), dy: size * 0.018)
+    }
+
+    /// 磨砂字：一层白色柔光 + 半透明本体 + 一道细边
+    private static func drawFrostName(_ text: String, x: Double, baseline: Double,
+                                      size: Double, tracking: Double, font: UIFont,
+                                      slant: Double, rgb: Int) {
+        guard let c = UIGraphicsGetCurrentContext() else { return }
+        let top = CGFloat(baseline) - font.ascender
+
+        var halo = glyphAttributes(text, size: size, tracking: tracking, font: font,
+                                   color: UIColor.white.withAlphaComponent(0.20))
+        let sh = NSShadow()
+        sh.shadowColor = UIColor.white.withAlphaComponent(0.20)
+        sh.shadowBlurRadius = CGFloat(max(1.8, size * 0.12))
+        sh.shadowOffset = .zero
+        halo[.shadow] = sh
+
+        c.saveGState()
+        c.translateBy(x: CGFloat(x), y: top)
+        if slant != 0 { c.concatenate(CGAffineTransform(a: 1, b: 0, c: CGFloat(-slant), d: 1, tx: 0, ty: 0)) }
+        NSAttributedString(string: text, attributes: halo).draw(at: .zero)
+        NSAttributedString(string: text,
+                           attributes: glyphAttributes(text, size: size, tracking: tracking,
+                                                       font: font, color: shade(rgb, 0.18).withAlphaComponent(0.80)))
+            .draw(at: .zero)
+        c.restoreGState()
+
+        strokeText(text, x: x, top: top, size: size, tracking: tracking, font: font, slant: slant,
+                   color: UIColor.white.withAlphaComponent(0.35),
+                   width: max(0.7, size * 0.011), dy: 0)
+    }
+
+    /// 只描边不填充：UIKit 用负的 strokeWidth 表示「描边 + 填充」，
+    /// 这里要纯描边，所以配成 .strokeWidth 正值并且 fill 透明。
+    private static func strokeText(_ text: String, x: Double, top: CGFloat,
+                                   size: Double, tracking: Double, font: UIFont,
+                                   slant: Double, color: UIColor, width: Double, dy: Double) {
+        guard let c = UIGraphicsGetCurrentContext() else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .kern: CGFloat(tracking * size),
+            .foregroundColor: UIColor.clear,
+            .strokeColor: color,
+            .strokeWidth: width / size * 100
+        ]
+        c.saveGState()
+        c.translateBy(x: CGFloat(x), y: top + CGFloat(dy))
+        if slant != 0 { c.concatenate(CGAffineTransform(a: 1, b: 0, c: CGFloat(-slant), d: 1, tx: 0, ty: 0)) }
+        NSAttributedString(string: text, attributes: attrs).draw(at: .zero)
+        c.restoreGState()
     }
 
     /// 以基线为锚点绘制一段文字；斜体用切变模拟，和 Android 的 canvas.skew 对应。
