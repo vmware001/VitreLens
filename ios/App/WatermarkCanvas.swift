@@ -241,19 +241,43 @@ enum WatermarkCanvas {
         [.font: font, .foregroundColor: color, .kern: CGFloat(tracking * size)]
     }
 
-    /// 把文字画到一个纯 alpha 遮罩上，用来裁切渐变
-    private static func glyphMask(_ text: String, size: Double, tracking: Double, font: UIFont) -> CGImage? {
+    /// 把文字画成「渐变填充」的图：先铺渐变，再用 destinationIn 抠出字形。
+    ///
+    /// 不能用 `clip(to:mask:)` —— 位图上下文的 y 轴向下，
+    /// 遮罩图按设备坐标解释，字会被上下翻过来。
+    private static func gradientGlyph(_ text: String, size: Double, tracking: Double, font: UIFont,
+                                      rgb: Int) -> UIImage? {
         let s = NSAttributedString(string: text,
                                    attributes: glyphAttributes(text, size: size, tracking: tracking,
                                                                font: font, color: .white))
-        let box = CGSize(width: ceil(s.size().width) + 4, height: ceil(s.size().height) + 8)
-        guard box.width > 0, box.height > 0 else { return nil }
+        let textSize = s.size()
+        guard textSize.width > 0, textSize.height > 0 else { return nil }
+        let padX: CGFloat = 2, padY: CGFloat = 4
+        let box = CGSize(width: ceil(textSize.width) + padX * 2,
+                         height: ceil(textSize.height) + padY * 2)
         let fmt = UIGraphicsImageRendererFormat.default()
         fmt.scale = 1
         fmt.opaque = false
-        return UIGraphicsImageRenderer(size: box, format: fmt).image { _ in
-            s.draw(at: CGPoint(x: 2, y: 4))
-        }.cgImage
+
+        return UIGraphicsImageRenderer(size: box, format: fmt).image { ctx in
+            let c = ctx.cgContext
+            let ascent = Double(font.ascender)
+            // Android：从 -0.74×字号（上方）渐变到 -0.02×字号（贴近基线）
+            let y0 = CGFloat(ascent - size * 0.74) + padY
+            let y1 = CGFloat(ascent - size * 0.02) + padY
+            let colors = [shade(rgb, 0.55).cgColor,
+                          shade(rgb, 0.10).cgColor,
+                          shade(rgb, -0.18).cgColor] as CFArray
+            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                  colors: colors, locations: [0, 0.46, 1]) {
+                c.drawLinearGradient(g, start: CGPoint(x: 0, y: y0),
+                                     end: CGPoint(x: 0, y: y1),
+                                     options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            c.setBlendMode(.destinationIn)
+            s.draw(at: CGPoint(x: padX, y: padY))
+            c.setBlendMode(.normal)
+        }
     }
 
     /// 液态玻璃字：柔光投影 + 纵向渐变主体 + 三层细描边
@@ -281,28 +305,12 @@ enum WatermarkCanvas {
         NSAttributedString(string: text, attributes: shadowAttrs).draw(at: .zero)
         c.restoreGState()
 
-        // 2) 渐变主体：用 alpha 遮罩裁切后铺渐变
-        if let mask = glyphMask(text, size: size, tracking: tracking, font: font) {
-            let box = CGRect(x: 0, y: 0, width: mask.width, height: mask.height)
+        // 2) 渐变主体
+        if let glyph = gradientGlyph(text, size: size, tracking: tracking, font: font, rgb: rgb) {
             c.saveGState()
             c.translateBy(x: CGFloat(x) - 2, y: top - 4)
             if slant != 0 { c.concatenate(CGAffineTransform(a: 1, b: 0, c: CGFloat(-slant), d: 1, tx: 0, ty: 0)) }
-            c.clip(to: box, mask: mask)
-
-            let ascent = Double(font.ascender)
-            // Android：从 -0.74×字号（上方）渐变到 -0.02×字号（贴近基线）
-            let y0 = CGFloat(ascent - size * 0.74) + 4
-            let y1 = CGFloat(ascent - size * 0.02) + 4
-            let colors = [shade(rgb, 0.55).cgColor,
-                          shade(rgb, 0.10).cgColor,
-                          shade(rgb, -0.18).cgColor] as CFArray
-            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                  colors: colors, locations: [0, 0.46, 1]) {
-                c.drawLinearGradient(g,
-                                     start: CGPoint(x: 0, y: y0),
-                                     end: CGPoint(x: 0, y: y1),
-                                     options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
-            }
+            glyph.draw(at: .zero)
             c.restoreGState()
         }
 
