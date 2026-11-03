@@ -113,12 +113,13 @@ class VideoWatermark {
 
         // 源视频的真实色彩特性。之前一律按 BT.601 + SDR 处理，
         // 遇到 BT.2020/HLG 的源（OPPO 的动态照片就是）会整体偏色发灰，而且不会报错。
-        // 当前链路是 8 位 ARGB/RGBA，不能宣称 Main10 HDR 直通。
-        // 统一做明确的 SDR 色调映射，避免 PQ 被错贴 HLG 标签或位深损失被隐藏。
-        final boolean hdrSource = isHdrTransfer(getInt(vf, MediaFormat.KEY_COLOR_TRANSFER, 0));
-        final boolean hdrOut = false;
-        if (hdrSource) {
-            Log.i(TAG, "源是 HDR，当前 8 位合成链路统一输出 SDR（BT.709）");
+        final int sourceTransfer = getInt(vf, MediaFormat.KEY_COLOR_TRANSFER, 0);
+        final boolean dolbySource = "video/dolby-vision".equalsIgnoreCase(vMime);
+        final boolean hdrSource = isHdrTransfer(sourceTransfer) || dolbySource;
+        // 恢复 HDR 输出：有 HEVC 能力时保留源 HDR 信号，否则才回退 SDR。
+        final boolean hdrOut = hdrSource && hdrEncodeSupported();
+        if (hdrSource && !hdrOut) {
+            Log.i(TAG, "源是 HDR，但本机没有可用 HEVC 编码器，回退 SDR");
         }
         YuvConverter yuv = new YuvConverter(
                 getInt(vf, MediaFormat.KEY_COLOR_STANDARD, 0),
@@ -198,7 +199,7 @@ class VideoWatermark {
             MediaCodec candidate = null;
             try {
                 candidate = createEncoder(encMime, codecMode == 1);
-                candidate.configure(encoderFormat(encMime, outW, outH, fps, hdrOut),
+                candidate.configure(encoderFormat(encMime, outW, outH, fps, hdrOut, sourceTransfer),
                         null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                 enc = candidate;
                 if (attempt > 0) Log.w(TAG, "编码器不接受原尺寸，等比降为 " + outW + "x" + outH);
@@ -319,7 +320,7 @@ class VideoWatermark {
         try {
             if (hdrOut) {
                 encFmt.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020);
-                encFmt.setInteger("color-transfer", 7); // HLG
+                encFmt.setInteger("color-transfer", sourceTransfer == 6 ? 6 : 7); // HLG
             } else {
                 encFmt.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
                 encFmt.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
@@ -381,10 +382,11 @@ class VideoWatermark {
             mux.release();
         }
 
-        lastColorNote = !yuv.hdrSource
+        lastColorNote = !hdrSource
                 ? "视频 " + yuv.label
                 : (hdrOut
-                    ? "视频 " + yuv.label + " → 保留 HDR（HEVC / HLG）"
+                    ? "视频 " + yuv.label + " → 保留 HDR（HEVC / "
+                        + (sourceTransfer == 6 ? "PQ" : "HLG") + "）"
                     : "视频 " + yuv.label + " → 已色调映射为 SDR（BT.709）");
         lastTimingNote = String.format(java.util.Locale.US,
                 "总耗时 %.1fs｜YUV %.1fs｜玻璃 %.1fs｜编码上传 %.1fs",
@@ -688,7 +690,8 @@ class VideoWatermark {
         boolean v;
     }
 
-    private static MediaFormat encoderFormat(String mime, int w, int h, int fps, boolean hdrOut) {
+    private static MediaFormat encoderFormat(String mime, int w, int h, int fps,
+                                             boolean hdrOut, int sourceTransfer) {
         MediaFormat ef = MediaFormat.createVideoFormat(mime, w, h);
         ef.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         ef.setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(w, h, fps));
@@ -697,7 +700,7 @@ class VideoWatermark {
         try {
             if (hdrOut) {
                 ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020);
-                ef.setInteger("color-transfer", 7);
+                ef.setInteger("color-transfer", sourceTransfer == 6 ? 6 : 7);
             } else {
                 ef.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709);
                 ef.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO);
