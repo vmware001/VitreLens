@@ -1,28 +1,44 @@
 import UIKit
 import VitreLensCore
 
-/// 用 iOS 系统字体实现核心库的 `TextMeasuring`。
+/// 用与 Android 完全相同的随包字体实现核心库的 `TextMeasuring`。
 ///
-/// Android 用 Roboto，iOS 用 SF Pro，字形宽度天然不同；这里保证的是**度量口径**一致
-/// （字号、字距、行高都按同一套规则算），所以版式规则可以复用，像素不会逐一相同。
+/// 字号、字距、行高及字体文件均一致；字体引擎的细微栅格化差异仍可能存在，
+/// 但不再因为 SF Pro / Roboto 字形不同而改变水印宽度与换行收敛。
 struct CoreTextMeasurer: TextMeasuring {
 
     func font(size: Double, role: FontRole, bold: Bool) -> UIFont {
         let s = CGFloat(size)
+        let postScriptName: String
+        switch role {
+        case .mono: postScriptName = "JetBrainsMono-Regular"
+        case .serif: postScriptName = "PlayfairDisplay-Regular"
+        case .condensed: postScriptName = "Oswald-Regular"
+        case .sans: postScriptName = "Inter-Regular"
+        }
+        if let base = UIFont(name: postScriptName, size: s) {
+            guard bold else { return base }
+            // Android 对随包 Regular 字体调用 Typeface.create(..., BOLD)；
+            // iOS 同样请求粗体描述符，字体没有独立粗体时由系统合成。
+            let traits = base.fontDescriptor.symbolicTraits.union(.traitBold)
+            if let descriptor = base.fontDescriptor.withSymbolicTraits(traits) {
+                return UIFont(descriptor: descriptor, size: s)
+            }
+            return base
+        }
+
+        // 资源异常时仍可用，不让整个导出失败；正常安装包不会进入这里。
         let weight: UIFont.Weight = bold ? .semibold : .regular
         switch role {
-        case .mono:
-            return UIFont.monospacedSystemFont(ofSize: s, weight: weight)
+        case .mono: return UIFont.monospacedSystemFont(ofSize: s, weight: weight)
+        case .condensed: return UIFont.systemFont(ofSize: s, weight: weight, width: .condensed)
         case .serif:
             let base = UIFont.systemFont(ofSize: s, weight: weight)
             if let d = base.fontDescriptor.withDesign(.serif) {
                 return UIFont(descriptor: d, size: s)
             }
             return base
-        case .condensed:
-            return UIFont.systemFont(ofSize: s, weight: weight, width: .condensed)
-        case .sans:
-            return UIFont.systemFont(ofSize: s, weight: weight)
+        case .sans: return UIFont.systemFont(ofSize: s, weight: weight)
         }
     }
 

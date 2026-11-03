@@ -52,6 +52,10 @@ enum Snapshot {
 
         let metal = GlassRenderer.shared.isAvailable ? "metal" : "fallback"
         try? metal.write(to: dir.appendingPathComponent("backend.txt"), atomically: true, encoding: .utf8)
+        let fontStatus = ["Inter-Regular", "Oswald-Regular", "PlayfairDisplay-Regular", "JetBrainsMono-Regular"]
+            .map { "\($0)=\(UIFont(name: $0, size: 24) == nil ? "missing" : "ok")" }
+            .joined(separator: "\n")
+        try? fontStatus.write(to: dir.appendingPathComponent("fonts.txt"), atomically: true, encoding: .utf8)
         exit(0)
     }
 

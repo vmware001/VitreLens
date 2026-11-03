@@ -42,5 +42,10 @@ targets:
           - UIInterfaceOrientationPortrait
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        UIAppFonts:
+          - Fonts/inter.ttf
+          - Fonts/oswald.ttf
+          - Fonts/playfair.ttf
+          - Fonts/jetbrainsmono.ttf
         NSPhotoLibraryUsageDescription: 需要访问相册，以便选择要加水印的照片。
         NSPhotoLibraryAddUsageDescription: 需要写入相册，以便保存导出结果。
