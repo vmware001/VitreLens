@@ -37,6 +37,8 @@ class GlassRenderer {
     private FloatBuffer quad;
 
     private Bitmap blurBitmap, blurBitmap2;
+    private ByteBuffer readBack;
+    private byte[] flipPixels;
 
     GlassRenderer(MainActivity act) throws Exception {
         String frag = readRaw(act, R.raw.glass_frag_pbr);
@@ -373,14 +375,19 @@ class GlassRenderer {
         GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 0, quad);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
 
-        ByteBuffer buf = ByteBuffer.allocateDirect(w * h * 4);
-        GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf);
-        buf.position(0);
+        int byteCount = w * h * 4;
+        if (readBack == null || readBack.capacity() < byteCount) {
+            readBack = ByteBuffer.allocateDirect(byteCount);
+        }
+        readBack.clear();
+        GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readBack);
+        readBack.position(0);
 
         // Android 的 ARGB_8888 在内存里就是 R,G,B,A 字节序，与 GL_RGBA 一致，
-        // 所以只需要上下翻转，不用再逐像素换通道（快一倍以上）。
-        byte[] px = buf.array();
-        byte[] out = new byte[px.length];
+        // 所以只需要上下翻转，不用再逐像素换通道；回读与翻转数组按尺寸复用。
+        byte[] px = readBack.array();
+        if (flipPixels == null || flipPixels.length < byteCount) flipPixels = new byte[byteCount];
+        byte[] out = flipPixels;
         int row = w * 4;
         for (int y = 0; y < h; y++) {
             System.arraycopy(px, (h - 1 - y) * row, out, y * row, row);

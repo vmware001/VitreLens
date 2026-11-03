@@ -113,12 +113,12 @@ class VideoWatermark {
 
         // 源视频的真实色彩特性。之前一律按 BT.601 + SDR 处理，
         // 遇到 BT.2020/HLG 的源（OPPO 的动态照片就是）会整体偏色发灰，而且不会报错。
-        // HDR 输出：设备有 HEVC 编码器、且源本身是 HDR 时，就不再色调映射成 SDR，
-        // 直接把 HLG/PQ 信号送进编码器。位深取决于编码器（真机多为 Main10）。
+        // 当前链路是 8 位 ARGB/RGBA，不能宣称 Main10 HDR 直通。
+        // 统一做明确的 SDR 色调映射，避免 PQ 被错贴 HLG 标签或位深损失被隐藏。
         final boolean hdrSource = isHdrTransfer(getInt(vf, MediaFormat.KEY_COLOR_TRANSFER, 0));
-        final boolean hdrOut = hdrSource && hdrEncodeSupported();
-        if (hdrSource && !hdrOut) {
-            Log.i(TAG, "源是 HDR，但本机没有 HEVC 编码器，只能回退 SDR");
+        final boolean hdrOut = false;
+        if (hdrSource) {
+            Log.i(TAG, "源是 HDR，当前 8 位合成链路统一输出 SDR（BT.709）");
         }
         YuvConverter yuv = new YuvConverter(
                 getInt(vf, MediaFormat.KEY_COLOR_STANDARD, 0),
@@ -551,7 +551,7 @@ class VideoWatermark {
                     work = slot.work;
                 }
                 long cs = System.nanoTime();
-                composer.composeOn(work, outW, outH, vst);
+                composer.composeVideoOn(work, outW, outH, vst);
                 stats.composeNs += System.nanoTime() - cs;
                 long bs = System.nanoTime();
                 blitter.draw(work, slot.ptsUs);
@@ -709,10 +709,11 @@ class VideoWatermark {
     }
 
     private static int bitrateFor(int w, int h, int fps) {
-        // 约 0.13 bit/像素/帧，夹在 4~16 Mbps
+        // 约 0.13 bit/像素/帧。高分辨率玻璃边缘和细文字需要更高码率，
+        // 4K30 不再被旧的 16 Mbps 上限截断；40 Mbps 上限兼顾兼容性。
         long b = (long) ((double) w * h * fps * 0.13);
         if (b < 4_000_000L) b = 4_000_000L;
-        if (b > 16_000_000L) b = 16_000_000L;
+        if (b > 40_000_000L) b = 40_000_000L;
         return (int) b;
     }
 

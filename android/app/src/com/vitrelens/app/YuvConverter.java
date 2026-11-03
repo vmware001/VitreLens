@@ -42,12 +42,15 @@ final class YuvConverter {
     private static final int XFER_HLG = 7;
 
     // MediaFormat.COLOR_RANGE_*
-    private static final int RANGE_FULL = 1;
+    private static final int RANGE_FULL = 2;
 
     private final int yScale;   // 亮度缩放：limited 1192 / full 1024
     private final int yOffset;  // 亮度黑电平：limited 16 / full 0
     private final int rCr, gCb, gCr, bCb;
     private final byte[] lut;   // null 表示源本身就是 SDR，无需转换
+    private final boolean gamut2020to709;
+    private static final int[] SRGB_TO_LINEAR = buildSrgbToLinear();
+    private static final byte[] LINEAR_TO_SRGB = buildLinearToSrgb();
 
     /** 给人看的描述，写进日志 */
     final String label;
@@ -88,6 +91,7 @@ final class YuvConverter {
         // lut == null 表示「YUV 转 RGB 之后原样输出」：SDR 源本来就是直通，
         // HDR 源在 keepHdrSignal 时也走这条，从而保住 HDR 信号
         lut = (hdrSource && !keepHdrSignal) ? buildToneMapLut(colorTransfer) : null;
+        gamut2020to709 = std == STD_BT2020 && !keepHdrSignal;
 
         String stdName = std == STD_BT2020 ? "BT.2020"
                 : (std == STD_BT601_PAL || std == STD_BT601_NTSC) ? "BT.601" : "BT.709";
@@ -141,6 +145,40 @@ final class YuvConverter {
             t[i] = (byte) v;
         }
         return t;
+    }
+
+    private static int[] buildSrgbToLinear() {
+        int[] t = new int[256];
+        for (int i = 0; i < 256; i++) {
+            double s = i / 255.0;
+            double v = s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+            t[i] = (int) Math.round(v * 4096.0);
+        }
+        return t;
+    }
+
+    private static byte[] buildLinearToSrgb() {
+        byte[] t = new byte[4097];
+        for (int i = 0; i < t.length; i++) {
+            double v = i / 4096.0;
+            double s = v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+            int n = (int) Math.round(s * 255.0);
+            t[i] = (byte) Math.max(0, Math.min(255, n));
+        }
+        return t;
+    }
+
+    /** 在线性光中做 BT.2020 → BT.709 色域转换，定点 12 位，避免浮点热点。 */
+    private int gamutPack(int r, int g, int b) {
+        int rl = SRGB_TO_LINEAR[r], gl = SRGB_TO_LINEAR[g], bl = SRGB_TO_LINEAR[b];
+        int nr = (6801 * rl - 2407 * gl - 298 * bl + 2048) >> 12;
+        int ng = (-510 * rl + 4640 * gl - 34 * bl + 2048) >> 12;
+        int nb = (-75 * rl - 412 * gl + 4581 * bl + 2048) >> 12;
+        nr = Math.max(0, Math.min(4096, nr));
+        ng = Math.max(0, Math.min(4096, ng));
+        nb = Math.max(0, Math.min(4096, nb));
+        return ((LINEAR_TO_SRGB[nr] & 0xFF) << 16)
+                | ((LINEAR_TO_SRGB[ng] & 0xFF) << 8) | (LINEAR_TO_SRGB[nb] & 0xFF);
     }
 
     boolean toBitmap(Image img, Bitmap bmp, int[] scratch, int W, int H) {
@@ -238,7 +276,8 @@ final class YuvConverter {
                     g = lut[g] & 0xFF;
                     b = lut[b] & 0xFF;
                 }
-                scratch[base + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                int packed = gamut2020to709 ? gamutPack(r, g, b) : (r << 16) | (g << 8) | b;
+                scratch[base + x] = 0xFF000000 | packed;
             }
         }
     }
@@ -362,7 +401,8 @@ final class YuvConverter {
                     g = lut[g] & 0xFF;
                     b = lut[b] & 0xFF;
                 }
-                scratch[base + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+                int packed = gamut2020to709 ? gamutPack(r, g, b) : (r << 16) | (g << 8) | b;
+                scratch[base + x] = 0xFF000000 | packed;
             }
         }
     }
