@@ -20,7 +20,10 @@ enum WatermarkCanvas {
         drawTexts(L, style: style, measurer: measurer)
     }
 
-    /// 合成完整图片（照片 + 水印）
+    /// 合成完整图片（照片 + 玻璃 + 文字）
+    ///
+    /// 有 Metal 时走真实折射渲染，文字仍由 Core Graphics 画在最上层；
+    /// 取不到 Metal 设备时回退到 Core Graphics 近似面板，保证任何设备都能导出。
     static func composite(image: UIImage,
                           canvasSize: CGSize,
                           style: WatermarkStyle,
@@ -28,10 +31,65 @@ enum WatermarkCanvas {
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         format.opaque = true
+
+        let L = WatermarkLayoutEngine.layout(width: Double(canvasSize.width),
+                                             height: Double(canvasSize.height),
+                                             style: style,
+                                             measurer: measurer)
+
+        // 预览与导出都必须先缩放到画布尺寸再渲染，否则玻璃参数（按像素算）会不一致
+        let photo = resizedCGImage(image, to: canvasSize)
+        let glassImage: CGImage? = {
+            guard let photo, L.hasContent else { return nil }
+            return GlassRenderer.shared.renderGlass(photo: photo,
+                                                    style: style,
+                                                    layout: L,
+                                                    themeDark: isDarkBackdrop(photo))
+        }()
+
         return UIGraphicsImageRenderer(size: canvasSize, format: format).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: canvasSize))
-            draw(canvasSize: canvasSize, style: style, measurer: measurer)
+            if let glassImage {
+                UIImage(cgImage: glassImage).draw(in: CGRect(origin: .zero, size: canvasSize))
+                drawTexts(L, style: style, measurer: measurer)
+            } else {
+                image.draw(in: CGRect(origin: .zero, size: canvasSize))
+                draw(canvasSize: canvasSize, style: style, measurer: measurer)
+            }
         }
+    }
+
+    /// 缩放到目标尺寸的 CGImage（预览用，导出时尺寸相同则走快速路径）
+    static func resizedCGImage(_ image: UIImage, to size: CGSize) -> CGImage? {
+        let w = Int(size.width.rounded()), h = Int(size.height.rounded())
+        guard w > 0, h > 0 else { return nil }
+        if let cg = image.cgImage, cg.width == w, cg.height == h { return cg }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        format.opaque = true
+        let scaled = UIGraphicsImageRenderer(size: CGSize(width: w, height: h), format: format).image { _ in
+            image.draw(in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        return scaled.cgImage
+    }
+
+    /// 背景整体偏暗时，「色调」档的实色应取近黑——对应系统的深色外观。
+    /// 用 16×16 缩略图取平均亮度，够快也够稳。
+    static func isDarkBackdrop(_ image: CGImage) -> Bool {
+        let n = 16
+        var data = [UInt8](repeating: 0, count: n * n * 4)
+        guard let ctx = CGContext(data: &data, width: n, height: n, bitsPerComponent: 8,
+                                  bytesPerRow: n * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return false
+        }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: n, height: n))
+        var sum = 0.0
+        for i in stride(from: 0, to: data.count, by: 4) {
+            // 感知亮度
+            let r = Double(data[i]), g = Double(data[i + 1]), b = Double(data[i + 2])
+            sum += (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+        }
+        return sum / Double(n * n) < 0.45
     }
 
     // MARK: - 玻璃面板（Core Graphics 近似版）

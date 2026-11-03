@@ -17,6 +17,16 @@ public enum GlassPreset: Int, CaseIterable {
         }
     }
 
+    /// 界面上的一行说明，和网页版的描述保持一致
+    public var subtitle: String {
+        switch self {
+        case .standard: return "系统透明档"
+        case .clear: return "轻盈折射"
+        case .frost: return "柔雾质感"
+        case .thick: return "强边缘透镜"
+        }
+    }
+
     // ior, radius, depth, thickness, rough, disp, refl, trans, gloss, shadow, white, warp, segments, edge
     private var values: (Double, Double, Double, Double, Double, Double, Double,
                          Double, Double, Double, Double, Double, Int, Double) {
