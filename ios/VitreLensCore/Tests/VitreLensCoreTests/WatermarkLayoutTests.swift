@@ -34,14 +34,19 @@ final class WatermarkLayoutTests: XCTestCase {
     }
 
     func testNarrowerWidthShrinksText() {
-        var wide = style()
-        wide.widthPct = 92
-        var narrow = style()
-        narrow.widthPct = 40
+        // 面板宽度取 max(W*widthPct, 内容宽+内边距)，内容装得下就不会缩字；
+        // 所以要用长标题 + 窄面板，才能触发那 6 次收敛。
+        var s = style()
+        s.name = "OPPO Find X10 Pro Max Hasselblad Camera System Limited Edition"
 
-        let a = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: wide, measurer: measurer)
-        let b = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: narrow, measurer: measurer)
-        XCTAssertLessThan(b.nameSize, a.nameSize, "变窄后字号应缩小")
+        s.widthPct = 92
+        let wide = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s, measurer: measurer)
+
+        s.widthPct = 50
+        let narrow = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s, measurer: measurer)
+
+        XCTAssertLessThan(narrow.nameSize, wide.nameSize, "变窄后字号应缩小")
+        XCTAssertGreaterThan(narrow.nameSize, 0)
     }
 
     func testEmptySubtitleTakesNoSpace() {
@@ -82,8 +87,7 @@ final class WatermarkLayoutTests: XCTestCase {
     }
 
     func testMissingLogoAssetsLeaveNoGap() {
-        var s = style()
-        s.showBrand = true
+        let s = style()
         let L = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s, measurer: measurer)
         XCTAssertFalse(L.logoOn)
         XCTAssertEqual(L.logoW, 0, accuracy: 0.0001)
@@ -95,6 +99,9 @@ final class WatermarkLayoutTests: XCTestCase {
             func aspectRatio(brand: Int) -> Double? { 3.2 }
         }
         var s = style()
+        // 面板宽度是 max(W*widthPct, 内容宽+内边距)；widthPct 92 时永远是 920，
+        // logo 撑不出差别。收窄到内容宽度驱动，才能验证 logo 确实参与排版。
+        s.widthPct = 30
         let plain = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s, measurer: measurer)
         let withLogo = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s,
                                                     measurer: measurer, logos: FixedLogo())

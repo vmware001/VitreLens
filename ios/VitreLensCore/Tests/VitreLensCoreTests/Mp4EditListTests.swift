@@ -24,7 +24,9 @@ final class Mp4EditListTests: XCTestCase {
 
     private func mdhd(timescale: Int) -> [UInt8] {
         // version+flags(4) creation(4) modification(4) timescale(4) duration(4)
-        box("mdhd", [0, 0, 0, 0] + be32(0) + be32(0) + be32(timescale) + be32(1000))
+        // 再补 language(2) + quality(2)：真实 mdhd 至少 24 字节，
+        // 解析器要求 m+24 <= 盒尾，这里必须构造完整长度否则会被判为读不到 timescale。
+        box("mdhd", [0, 0, 0, 0] + be32(0) + be32(0) + be32(timescale) + be32(1000) + [0, 0] + [0, 0])
     }
 
     private func elstV0(mediaTime: Int, duration: Int = 1000) -> [UInt8] {
