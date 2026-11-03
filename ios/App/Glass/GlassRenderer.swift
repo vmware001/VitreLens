@@ -71,9 +71,8 @@ final class GlassRenderer {
                                                                width: fullW, height: fullH,
                                                                mipmapped: false)
         outDesc.usage = [.renderTarget, .shaderRead]
-        // Apple 系 GPU 不支持 managed，Intel Mac 模拟器不支持 shared —— 按设备能力选
-        let unified = device.hasUnifiedMemory
-        outDesc.storageMode = unified ? .shared : .managed
+        // iOS 只支持 shared（managed 是 macOS 专属），统一内存下也能直接被 CPU 读取
+        outDesc.storageMode = .shared
         guard let outTex = device.makeTexture(descriptor: outDesc) else { return nil }
 
         var uniforms = makeUniforms(style: style, layout: layout, fullW: fullW, fullH: fullH, themeDark: themeDark)
@@ -93,12 +92,6 @@ final class GlassRenderer {
         enc.setFragmentTexture(blur2, index: 2)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         enc.endEncoding()
-
-        // 非统一内存时，渲染结果需要显式同步回 CPU 可读的存储
-        if !unified, let blit = cmd.makeBlitCommandEncoder() {
-            blit.synchronize(resource: outTex)
-            blit.endEncoding()
-        }
         cmd.commit()
         cmd.waitUntilCompleted()
 
@@ -153,7 +146,7 @@ final class GlassRenderer {
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
                                                            width: w, height: h, mipmapped: false)
         desc.usage = .shaderRead
-        desc.storageMode = device.hasUnifiedMemory ? .shared : .managed
+        desc.storageMode = .shared
         guard let tex = device.makeTexture(descriptor: desc) else { return nil }
 
         let bytesPerRow = w * 4
