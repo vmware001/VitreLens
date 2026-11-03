@@ -158,9 +158,8 @@ final class GlassRenderer {
                                       space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                         | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
-            // 翻成左上角原点，与着色器的 uv 约定一致
-            ctx.translateBy(x: 0, y: CGFloat(h))
-            ctx.scaleBy(x: 1, y: -1)
+            // 位图上下文的第一行就是图像顶行，直接画即可（不要翻转），
+            // 这样纹理行 0 = 画面顶部，与着色器 uv.y=0 的约定一致。
             ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
             return true
         }
@@ -221,18 +220,11 @@ final class GlassRenderer {
         texture.getBytes(&data, bytesPerRow: bytesPerRow,
                          from: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0)
 
-        // 渲染目标是左上角原点（着色器直接输出），CGImage 需要自下而上，
-        // 所以这里翻转行序，而不是在着色器里再翻一次。
-        var flipped = [UInt8](repeating: 0, count: data.count)
-        for y in 0..<h {
-            let src = y * bytesPerRow
-            let dst = (h - 1 - y) * bytesPerRow
-            flipped[dst..<(dst + bytesPerRow)] = data[src..<(src + bytesPerRow)]
-        }
-
+        // 纹理第 0 行就是画面顶行，CGImage 也是第 0 行在上，
+        // 两边约定一致，不需要再翻一次——多翻一次会让照片正、面板反。
         let alphaInfo: CGBitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
             .union(CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue))
-        guard let provider = CGDataProvider(data: Data(flipped) as CFData) else { return nil }
+        guard let provider = CGDataProvider(data: Data(data) as CFData) else { return nil }
         return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
                        bytesPerRow: bytesPerRow, space: CGColorSpaceCreateDeviceRGB(),
                        bitmapInfo: alphaInfo, provider: provider, decode: nil,
