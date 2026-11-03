@@ -33,11 +33,13 @@ final class WatermarkLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(L.metaX + L.metaW, contentRight + 1, "时间溢出面板")
     }
 
-    func testNarrowerWidthShrinksText() {
-        // 面板宽度取 max(W*widthPct, 内容宽+内边距)，内容装得下就不会缩字；
-        // 所以要用长标题 + 窄面板，才能触发那 6 次收敛。
+    func testWidthPercentNarrowsPanelWhenContentFits() {
+        // 内容短时面板宽度完全由 widthPct 决定，字号不动
         var s = style()
-        s.name = "OPPO Find X10 Pro Max Hasselblad Camera System Limited Edition"
+        s.name = "X"
+        s.subtitle = ""
+        s.params = ""
+        s.meta = ""
 
         s.widthPct = 92
         let wide = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s, measurer: measurer)
@@ -45,8 +47,22 @@ final class WatermarkLayoutTests: XCTestCase {
         s.widthPct = 50
         let narrow = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s, measurer: measurer)
 
-        XCTAssertLessThan(narrow.nameSize, wide.nameSize, "变窄后字号应缩小")
-        XCTAssertGreaterThan(narrow.nameSize, 0)
+        XCTAssertEqual(wide.panel.w, 920, accuracy: 0.001)
+        XCTAssertEqual(narrow.panel.w, 500, accuracy: 0.001)
+        XCTAssertEqual(wide.nameSize, narrow.nameSize, accuracy: 0.001, "装得下就不该缩字")
+    }
+
+    func testOverlongContentShrinksToFitPanelCap() {
+        // widthPct 本身不会触发缩字：面板宽度取 max(W*widthPct, 内容宽+内边距)，
+        // 内容驱动时 availW 恰好等于内容宽。真正会收敛的是内容超过画幅留边上限
+        // （W - 2*margin，1000 宽时是 924）的情况——视频水印就是这样被压下来的。
+        var s = style()
+        s.name = "OPPO Find X10 Pro Max Hasselblad Camera System Limited Edition"
+
+        let L = WatermarkLayoutEngine.layout(width: 1000, height: 1400, style: s, measurer: measurer)
+
+        XCTAssertLessThan(L.nameSize, 24, "超长标题应被收敛")
+        XCTAssertLessThanOrEqual(L.panel.w, 1000 - 76 + 0.001, "面板不得超过画幅留边")
     }
 
     func testEmptySubtitleTakesNoSpace() {
