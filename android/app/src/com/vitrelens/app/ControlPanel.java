@@ -70,12 +70,19 @@ class ControlPanel {
         label(c1, "相机品牌 Logo");
         segmentedWrap(c1, new String[]{"无", "徕卡", "哈苏", "哈苏H", "蔡司", "理光", "苹果", "自定义"},
                 v -> {
-                    st.brand = v;
-                    st.showBrand = v > 0;
-                    st.logoSizePct = 100f;   // 各品牌合适的大小不同，换品牌就回默认
-                    refreshAll();
+                    if (act instanceof MainActivity) ((MainActivity) act).selectLogo(v);
+                    else {
+                        st.brand = v;
+                        st.showBrand = v > 0;
+                        st.logoSizePct = 100f;
+                        refreshAll();
+                    }
                 },
-                () -> st.brand);
+                () -> st.brand,
+                v -> {
+                    if (act instanceof MainActivity) ((MainActivity) act).selectLogoWithScope(v);
+                });
+        hint(c1, "多选时首次切换应用到全部，之后只改当前照片；长按 Logo 可手动选择范围");
         button(c1, "选择自定义图标…", () -> {
             if (act instanceof MainActivity) ((MainActivity) act).pickCustomLogo();
         });
@@ -727,7 +734,8 @@ class ControlPanel {
     }
 
     /** 单选的胶囊组（自动换行，每行最多 4 个） */
-    private void segmentedWrap(LinearLayout parent, String[] options, IntSetter set, IntGetter current) {
+    private void segmentedWrap(LinearLayout parent, String[] options, IntSetter set,
+                               IntGetter current, IntSetter longPress) {
         final int perRow = 4;
         TextView[] chips = new TextView[options.length];
         final Runnable sync = () -> {
@@ -743,6 +751,12 @@ class ControlPanel {
                 final int idx = start + k;
                 TextView c = chip(options[idx]);
                 c.setOnClickListener(v -> { set.set(idx); sync.run(); onChange.run(); });
+                if (longPress != null) {
+                    c.setOnLongClickListener(v -> {
+                        longPress.set(idx);
+                        return true;
+                    });
+                }
                 chips[idx] = c;
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1);
                 if (k > 0) lp.leftMargin = dp(6);

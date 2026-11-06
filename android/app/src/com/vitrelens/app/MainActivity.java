@@ -56,6 +56,9 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     /** 选中的照片列表（支持多选）；只有一个时缩略图条隐藏 */
     private final java.util.List<Uri> photoUris = new java.util.ArrayList<>();
     private int photoIndex = 0;
+    /** 多选时按 URI 保存每张照片的 Logo；首次普通切换先作为全局基准。 */
+    private final java.util.Map<String, LogoChoice> logoChoices = new java.util.HashMap<>();
+    private boolean logoBatchGlobalApplied;
     private HorizontalScrollView filmRow;
     private LinearLayout filmstrip;
     /** 批量导出用：这一张处理完后要做什么 */
@@ -702,6 +705,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 String[] parts = path.split("\\|");
                 if (parts.length > 1) {
                     photoUris.clear();
+                    resetPhotoLogoBatch();
                     for (String one : parts) {
                         if (!one.trim().isEmpty()) {
                             photoUris.add(Uri.fromFile(new java.io.File(one.trim())));
@@ -729,6 +733,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
             return;
         }
         photoUris.clear();
+        resetPhotoLogoBatch();
         photoUris.add(u);
         photoIndex = 0;
         int flags = it.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
@@ -804,6 +809,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
             }
             if (!picked.isEmpty()) {
                 photoUris.clear();
+                resetPhotoLogoBatch();
                 photoUris.addAll(picked);
                 photoIndex = 0;
                 loadImage(photoUris.get(0), false);
@@ -870,8 +876,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 runOnUiThread(() -> {
                     pd.dismiss();
                     WatermarkPainter.setCustomLogo(src);
-                    style.brand = 7;
-                    style.showBrand = true;
+                    selectLogo(7);
                     if (refreshers != null) for (Runnable r : refreshers) r.run();
                     schedulePreview();
                     toast("已设为自定义图标");
@@ -969,8 +974,98 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         }).start();
     }
 
+    private static class LogoChoice {
+        int brand;
+        boolean show;
+        float sizePct;
+
+        static LogoChoice from(WatermarkPainter.Style st) {
+            LogoChoice c = new LogoChoice();
+            c.brand = st.brand;
+            c.show = st.showBrand;
+            c.sizePct = st.logoSizePct;
+            return c;
+        }
+
+        LogoChoice copy() {
+            LogoChoice c = new LogoChoice();
+            c.brand = brand;
+            c.show = show;
+            c.sizePct = sizePct;
+            return c;
+        }
+
+        void apply(WatermarkPainter.Style st) {
+            st.brand = brand;
+            st.showBrand = show;
+            st.logoSizePct = sizePct;
+        }
+    }
+
+    private void resetPhotoLogoBatch() {
+        logoChoices.clear();
+        logoBatchGlobalApplied = false;
+    }
+
+    private String currentPhotoKey() {
+        if (photoIndex < 0 || photoIndex >= photoUris.size()) return null;
+        Uri uri = photoUris.get(photoIndex);
+        return uri == null ? null : uri.toString();
+    }
+
+    private void saveCurrentLogoChoice() {
+        String key = currentPhotoKey();
+        if (photoUris.size() > 1 && key != null) {
+            logoChoices.put(key, LogoChoice.from(style));
+        }
+    }
+
+    /** 普通点击：每批照片的第一次修改作用于全部，之后只修改当前照片。 */
+    void selectLogo(int brand) {
+        boolean global = photoUris.size() > 1 && !logoBatchGlobalApplied;
+        applyLogoSelection(brand, global);
+    }
+
+    /** 长按某个 Logo：由用户明确选择全局或单张，不再依赖首次规则。 */
+    void selectLogoWithScope(final int brand) {
+        if (photoUris.size() <= 1) {
+            applyLogoSelection(brand, false);
+            schedulePreview();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Logo 应用范围")
+                .setItems(new String[]{"全部照片", "仅当前照片"}, (d, which) -> {
+                    applyLogoSelection(brand, which == 0);
+                    schedulePreview();
+                })
+                .show();
+    }
+
+    private void applyLogoSelection(int brand, boolean global) {
+        style.brand = brand;
+        style.showBrand = brand > 0;
+        style.logoSizePct = 100f;
+        if (photoUris.size() > 1) {
+            if (global) {
+                LogoChoice choice = LogoChoice.from(style);
+                for (Uri uri : photoUris) {
+                    if (uri != null) logoChoices.put(uri.toString(), choice.copy());
+                }
+            }
+            saveCurrentLogoChoice();
+            logoBatchGlobalApplied = true;
+            Log.i("VitreLens", "Logo 切换：brand=" + brand + "，范围="
+                    + (global ? "全部" : "单张") + "，index=" + photoIndex);
+            toast(global ? "Logo 已应用到全部 " + photoUris.size() + " 张照片"
+                    : "Logo 仅应用于当前照片");
+        }
+        if (panel != null) panel.refreshAll();
+    }
+
     private void switchTo(int idx) {
         if (idx < 0 || idx >= photoUris.size() || idx == photoIndex) return;
+        saveCurrentLogoChoice();
         photoIndex = idx;
         loadImage(photoUris.get(idx), true);
         buildFilmstrip();
@@ -1001,6 +1096,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         stopVideo();
         clearVideoMode();
         photoUris.clear();
+        resetPhotoLogoBatch();
         if (filmRow != null) filmRow.setVisibility(View.GONE);
         recycleQuietly(photo);
         photo = null;
@@ -1128,6 +1224,8 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
 
     private void loadImage(Uri uri, boolean quiet) {
         clearVideoMode();
+        final LogoChoice restoredLogo = photoUris.size() > 1
+                ? logoChoices.get(uri.toString()) : null;
         ProgressDialog pd = quiet ? null : ProgressDialog.show(this, "", "读取照片…", true, false);
         new Thread(() -> {
             try {
@@ -1165,6 +1263,14 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                     backdrop.setImageBitmap(bg);
                     applyUiGlass();
                     fillFromMeta();
+                    if (photoUris.size() > 1) {
+                        if (restoredLogo != null) {
+                            restoredLogo.apply(style);
+                            Log.i("VitreLens", "Logo 恢复：brand=" + restoredLogo.brand
+                                    + "，index=" + photoIndex);
+                        } else saveCurrentLogoChoice();
+                        if (refreshers != null) for (Runnable r : refreshers) r.run();
+                    }
                     if (pd != null) pd.dismiss();
                     // 换了照片，上一张的高质量预览就没用了
                     clearHqPreview();
@@ -1371,6 +1477,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     void refillFromExif() {
         if (meta == null) return;
         fillFromMeta();
+        saveCurrentLogoChoice();
         schedulePreview();
     }
 
@@ -1844,6 +1951,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     private int batchOk;
 
     private void startBatch() {
+        saveCurrentLogoChoice();
         batchOk = 0;
         photoIndex = -1;
         nextBatch(0);
