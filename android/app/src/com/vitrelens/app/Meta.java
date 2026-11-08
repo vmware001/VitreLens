@@ -360,8 +360,10 @@ class Meta {
                     seg2[3] = (byte) sl;
                     byte[] hdr = "ICC_PROFILE\u0000".getBytes("ISO-8859-1");
                     System.arraycopy(hdr, 0, seg2, 4, hdr.length);
-                    seg2[4 + 11] = (byte) (ci + 1);
-                    seg2[4 + 12] = (byte) chunks;
+                    // "ICC_PROFILE" 是 11 个可见字符，第 12 字节必须是 NUL。
+                    // 序号和总数位于签名之后；写到 4+11 会覆盖 NUL，导致整个 ICC 无法回读。
+                    seg2[4 + 12] = (byte) (ci + 1);
+                    seg2[4 + 13] = (byte) chunks;
                     System.arraycopy(icc, off, seg2, 4 + 14, chunkLen);
                     m.segs.add(seg2);
                 }

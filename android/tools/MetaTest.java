@@ -361,6 +361,10 @@ public class MetaTest {
         for (byte[] sg : m.segs) {
             if (heicIcc != null && sg.length > heicIcc.length + 14 && sg[0] == (byte) 0xFF && sg[1] == (byte) 0xE2
                     && sg[4] == 'I' && sg[5] == 'C') {
+                // ICC APP2：11 字节可见名称 + NUL，然后才是 chunk 序号与总数。
+                // 曾经把序号写到 NUL 位置、总数又落到保留字节，Pillow/相册会读不到 ICC。
+                chk(sg[15] == 0 && sg[16] == 1 && sg[17] == 1,
+                        "ICC 头含 NUL 结尾，序号/总数位置正确");
                 byte[] got = new byte[sg.length - 18];
                 System.arraycopy(sg, 18, got, 0, got.length);
                 iccSeg = java.util.Arrays.equals(got, heicIcc);
@@ -406,5 +410,6 @@ public class MetaTest {
         chk(back.model.equals(m.model), "回读机型一致：" + back.model);
         chk(back.hdr && back.trailerLength == m.trailerLength,
                 "回读仍识别为带 HDR 尾块（" + back.trailerLength + " 字节）");
+        chk(back.hasIcc, "重组 JPEG 回读后仍识别 ICC 色彩配置");
     }
 }
