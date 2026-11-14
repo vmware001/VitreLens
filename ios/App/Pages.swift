@@ -45,7 +45,8 @@ struct SectionLabel: View {
         Text(text.uppercased())
             .font(.system(size: 10, weight: .semibold))
             .tracking(1.1)
-            .foregroundStyle(.white.opacity(0.36))
+            // 0.36 在深底上约 2.8:1，小字不达标（评审 3.3-I5）
+            .foregroundStyle(.white.opacity(0.62))
     }
 }
 
@@ -73,6 +74,11 @@ struct SliderRow: View {
             Slider(value: $value, in: range)
                 .tint(.white.opacity(0.9))
                 .controlSize(.small)
+                // 视觉上仍是小尺寸滑杆，但把控件高度撑到 44pt，触摸热区才够（评审 3.3-I3）
+                .frame(minHeight: 44)
+                // VoiceOver 以前只会念百分比，不知道在调什么（评审 3.3-I8）
+                .accessibilityLabel(label)
+                .accessibilityValue(String(format: "%.\(decimals)f", value) + suffix)
         }
     }
 }
@@ -100,7 +106,10 @@ struct PrimaryButtonStyle: ButtonStyle {
                     .strokeBorder(Color.white.opacity(enabled ? 0.34 : 0.08), lineWidth: 1)
             )
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            // 关闭系统动画时不播放按压缩放（评审 3.3-I8）；用静态读取，避免引入未文档化的
+            // @Environment 用法（ButtonStyle 里取环境值不在公开语义内）
+            .animation(UIAccessibility.isReduceMotionEnabled ? nil : .easeOut(duration: 0.12),
+                       value: configuration.isPressed)
     }
 }
 
@@ -157,7 +166,7 @@ struct ContentPage: View {
                     Text("\(Int(model.source?.size.width ?? 0)) × \(Int(model.source?.size.height ?? 0))")
                         .font(.system(size: 10.5, design: .monospaced))
                 }
-                .foregroundStyle(.white.opacity(0.36))
+                .foregroundStyle(.white.opacity(0.62))
             } else {
                 VStack(spacing: 10) {
                     Image(systemName: "photo.on.rectangle.angled")
@@ -165,7 +174,7 @@ struct ContentPage: View {
                         .foregroundStyle(.white.opacity(0.22))
                     Text("导入一张照片开始")
                         .font(.system(size: 12.5))
-                        .foregroundStyle(.white.opacity(0.38))
+                        .foregroundStyle(.white.opacity(0.62))
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 220)
@@ -236,13 +245,15 @@ struct LayoutPage: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label)
                 .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.42))
+                .foregroundStyle(.white.opacity(0.62))
             TextField(label, text: text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .foregroundStyle(.white)
                 .padding(.vertical, 9)
                 .padding(.horizontal, 11)
+                // 输入框触摸目标 ≥44pt（评审 3.3-I3）
+                .frame(minHeight: 44)
                 .background(
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .fill(Color.white.opacity(0.06))
@@ -251,6 +262,7 @@ struct LayoutPage: View {
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
                 )
+                .accessibilityLabel(label)
         }
     }
 }
@@ -259,20 +271,32 @@ struct LayoutPage: View {
 
 struct GlassPage: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// 是否当前可见。页面常驻在 ZStack 里，只有可见时才去实例化 GlassRenderer 取后端状态，
+    /// 否则启动阶段就会在主线程编译 Metal 管线（评审 2.4-10）。
+    var isActive: Bool = true
     private let columns = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+
+    init(isActive: Bool = true) {
+        self.isActive = isActive
+    }
 
     var body: some View {
         PageShell {
             HStack {
                 SectionLabel(text: "预设")
                 Spacer()
-                statusBadge
+                if isActive { statusBadge }
             }
 
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(GlassPreset.allCases, id: \.rawValue) { p in
                     Button {
-                        withAnimation(.easeOut(duration: 0.16)) { model.apply(p) }
+                        if reduceMotion {
+                            model.apply(p)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.16)) { model.apply(p) }
+                        }
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(p.title)
@@ -280,7 +304,7 @@ struct GlassPage: View {
                                 .foregroundStyle(.white)
                             Text(p.subtitle)
                                 .font(.system(size: 10))
-                                .foregroundStyle(.white.opacity(0.45))
+                                .foregroundStyle(.white.opacity(0.62))
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 11)
@@ -327,7 +351,7 @@ struct GlassPage: View {
                 .frame(width: 5, height: 5)
             Text(on ? "Metal 实时折射" : "CPU 近似")
                 .font(.system(size: 9.5, weight: .medium))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(.white.opacity(0.62))
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
@@ -379,7 +403,7 @@ struct ExportPage: View {
 
                 Text(url.lastPathComponent)
                     .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.34))
+                    .foregroundStyle(.white.opacity(0.62))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -393,7 +417,7 @@ struct ExportPage: View {
                     .font(.system(size: 10.5))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .foregroundStyle(.white.opacity(0.34))
+            .foregroundStyle(.white.opacity(0.62))
         }
         .sheet(item: $shareURL) { url in
             ShareSheet(url: url)

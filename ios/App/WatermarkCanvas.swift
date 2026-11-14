@@ -24,36 +24,48 @@ enum WatermarkCanvas {
     ///
     /// 有 Metal 时走真实折射渲染，文字仍由 Core Graphics 画在最上层；
     /// 取不到 Metal 设备时回退到 Core Graphics 近似面板，保证任何设备都能导出。
+    ///
+    /// - Parameters:
+    ///   - imageKey: 图像身份，透传给 GlassRenderer 作为纹理/模糊缓存的 key。
+    ///     同一张源图（预览与导出）必须用同一个值，换图必须换值（评审 2.4-2）。
+    ///   - themeDark: 背景是否偏暗。非 nil 时直接用，省掉每次刷新重画 16×16 亮度图
+    ///     （评审 2.4-3）；nil 时现场计算。
     static func composite(image: UIImage,
                           canvasSize: CGSize,
                           style: WatermarkStyle,
-                          measurer: CoreTextMeasurer) -> UIImage {
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = 1
-        format.opaque = true
+                          measurer: CoreTextMeasurer,
+                          imageKey: String = "",
+                          themeDark: Bool? = nil) -> UIImage {
+        // 这个函数在后台线程以 16 次/秒的频率被调用，临时对象收进池里一次性释放
+        return autoreleasepool {
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            format.opaque = true
 
-        let L = WatermarkLayoutEngine.layout(width: Double(canvasSize.width),
-                                             height: Double(canvasSize.height),
-                                             style: style,
-                                             measurer: measurer)
+            let L = WatermarkLayoutEngine.layout(width: Double(canvasSize.width),
+                                                 height: Double(canvasSize.height),
+                                                 style: style,
+                                                 measurer: measurer)
 
-        // 预览与导出都必须先缩放到画布尺寸再渲染，否则玻璃参数（按像素算）会不一致
-        let photo = resizedCGImage(image, to: canvasSize)
-        let glassImage: CGImage? = {
-            guard let photo, L.hasContent else { return nil }
-            return GlassRenderer.shared.renderGlass(photo: photo,
-                                                    style: style,
-                                                    layout: L,
-                                                    themeDark: isDarkBackdrop(photo))
-        }()
+            // 预览与导出都必须先缩放到画布尺寸再渲染，否则玻璃参数（按像素算）会不一致
+            let photo = resizedCGImage(image, to: canvasSize)
+            let glassImage: CGImage? = {
+                guard let photo, L.hasContent else { return nil }
+                return GlassRenderer.shared.renderGlass(photo: photo,
+                                                        style: style,
+                                                        layout: L,
+                                                        themeDark: themeDark ?? isDarkBackdrop(photo),
+                                                        imageKey: imageKey)
+            }()
 
-        return UIGraphicsImageRenderer(size: canvasSize, format: format).image { _ in
-            if let glassImage {
-                UIImage(cgImage: glassImage).draw(in: CGRect(origin: .zero, size: canvasSize))
-                drawTexts(L, style: style, measurer: measurer)
-            } else {
-                image.draw(in: CGRect(origin: .zero, size: canvasSize))
-                draw(canvasSize: canvasSize, style: style, measurer: measurer)
+            return UIGraphicsImageRenderer(size: canvasSize, format: format).image { _ in
+                if let glassImage {
+                    UIImage(cgImage: glassImage).draw(in: CGRect(origin: .zero, size: canvasSize))
+                    drawTexts(L, style: style, measurer: measurer)
+                } else {
+                    image.draw(in: CGRect(origin: .zero, size: canvasSize))
+                    draw(canvasSize: canvasSize, style: style, measurer: measurer)
+                }
             }
         }
     }
