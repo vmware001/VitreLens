@@ -19,6 +19,47 @@
   };
   var G = { LatRef: 1, Lat: 2, LonRef: 3, Lon: 4, Alt: 6 };
 
+  /* ── 字节级小工具：整文件逐字节 getUint8 在 20MB JPEG 上是两千万次调用，
+        改用 Uint8Array 原生 indexOf / slice 快一到两个数量级 ── */
+
+  function bytesOf(view) {
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+
+  function findBytes(u8, tag, from, to) {
+    var end = Math.min(to, u8.length);
+    var first = tag.charCodeAt(0);
+    var i = u8.indexOf(first, from);
+    while (i >= 0 && i + tag.length <= end) {
+      var hit = true;
+      for (var k = 1; k < tag.length; k++) {
+        if (u8[i + k] !== tag.charCodeAt(k)) { hit = false; break; }
+      }
+      if (hit) return i;
+      i = u8.indexOf(first, i + 1);
+    }
+    return -1;
+  }
+
+  /** 找到 SOI..EOI 里的 EOI（0xFFD9）；熵编码数据里的 0xFF 都被填成 FF00，所以首个命中即真 EOI */
+  function findEoi(view, from) {
+    var u8 = bytesOf(view);
+    var i = u8.indexOf(0xD9, Math.max(1, from | 0));
+    while (i >= 0) {
+      if (u8[i - 1] === 0xFF) return i - 1;
+      i = u8.indexOf(0xD9, i + 1);
+    }
+    return -1;
+  }
+
+  function latin1(bytes) {
+    var s = '';
+    for (var i = 0; i < bytes.length; i += 4096) {
+      s += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 4096, bytes.length)));
+    }
+    return s;
+  }
+
   function readValue(view, off, type, count, little) {
     var i, out = [];
     switch (type) {
@@ -167,8 +208,15 @@
   }
   function pad(n) { return n < 10 ? '0' + n : String(n); }
 
-  /** 解析 ArrayBuffer；同时探测 HDR 增益图 */
-  function parse(buffer) {
+  /**
+   * 解析 JPEG 的 ArrayBuffer；同时探测 HDR 增益图与动态照片。
+   * opt.fileSize / opt.full：允许只传文件头部。此时 view 只是前 N 字节，
+   * 动态照片的 EOI 位置用「文件尾 - XMP 声明长度」反推，由 readFile 回读 2 字节确认。
+   */
+  function parse(buffer, opt) {
+    opt = opt || {};
+    var fileSize = opt.fileSize || buffer.byteLength;
+    var full = opt.full !== false && fileSize === buffer.byteLength;
     try {
       var view = new DataView(buffer);
       if (view.byteLength < 4 || view.getUint16(0, false) !== 0xFFD8) return null;
@@ -180,6 +228,7 @@
       var metaSegs = [];
       var mpf = null;
       var sosOff = -1;
+      var truncated = false;
       var off = 2;
 
       while (off + 4 <= view.byteLength) {
@@ -190,6 +239,7 @@
         if (code === 0xD9) break;
         var len = view.getUint16(off + 2, false);
         if (len < 2) break;
+        if (off + 2 + len > view.byteLength) { truncated = true; break; }
 
         if (code === 0xE1) {
           if (off + 10 <= view.byteLength &&
@@ -218,21 +268,23 @@
         off += 2 + len;
       }
 
+      var motionOpt = { fileSize: fileSize, full: full, lazyTrailer: !!opt.lazyTrailer };
       if (exifOff < 0) {
         if (!hdr && !xmp) return null;
         return { hdr: hdr, make: '', model: '', lens: '', fNumber: 0, exposure: 0,
                  iso: 0, focal: 0, focal35: 0, date: '', width: 0, height: 0, gps: null,
-                 motion: readMotion(view, sosOff, xmp) };
+                 motion: readMotion(view, sosOff, xmp, motionOpt), _truncated: truncated };
       }
       var parsed = readTiff(view, exifOff);
       if (parsed) {
         parsed.hdr = hdr;
-        parsed.motion = readMotion(view, sosOff, xmp);
+        parsed.motion = readMotion(view, sosOff, xmp, motionOpt);
         if (parsed.motion) {
           parsed.motion.hdrSeg = gainSeg;
           parsed.motion.metaSegs = metaSegs;
           parsed.motion.mpf = mpf;
         }
+        parsed._truncated = truncated;
       }
       return parsed;
     } catch (err) {
@@ -379,8 +431,9 @@
 
   function isXmp(view, off, len) {
     if (len < XMP_HEAD.length + 3) return false;
+    var u8 = bytesOf(view), p = off + 4;
     for (var i = 0; i < XMP_HEAD.length; i++) {
-      if (view.getUint8(off + 4 + i) !== XMP_HEAD.charCodeAt(i)) return false;
+      if (u8[p + i] !== XMP_HEAD.charCodeAt(i)) return false;
     }
     return true;
   }
@@ -389,36 +442,25 @@
     var start = off + 4 + XMP_HEAD.length + 1;
     var end = Math.min(view.byteLength, off + 2 + len - 2);
     if (end <= start) return null;
-    var bytes = new Uint8Array(end - start);
-    for (var i = 0; i < bytes.length; i++) bytes[i] = view.getUint8(start + i);
-    return bytes;
+    return bytesOf(view).slice(start, end);
   }
 
-  /**
   /**
    * 动态照片（Motion Photo / Live Photo）识别
    * JPEG[SOI..EOI] 之后追加若干数据段：
    *   - Google / OPPO / vivo：XMP 的 Container:Directory 按语义列出各段长度
    *   - 老版 Google：GCamera:MicroVideoOffset（以文件末尾为基准）
    *   - 少数机型：尾部直接是 MP4
+   * 只读到文件头时拿不到 EOI：前两种格式可以用「文件尾 - 声明长度」直接反推，
+   * 再由 readFile 回读 2 字节确认那里确实是 FFD9；裸 MP4 必须整文件在内存里才判定。
    */
-  function readMotion(view, sosOff, xmpBytes) {
-    if (sosOff < 0 || sosOff + 4 >= view.byteLength) return null;
+  function readMotion(view, sosOff, xmpBytes, opts) {
+    opts = opts || {};
+    var fileSize = opts.fileSize || view.byteLength;
+    var full = opts.full !== false;
+    if (!xmpBytes) return null;
 
-    var eoi = -1;
-    for (var i = sosOff; i < view.byteLength - 1; i++) {
-      if (view.getUint8(i) === 0xFF && view.getUint8(i + 1) === 0xD9) { eoi = i; break; }
-    }
-    if (eoi < 0) return null;
-
-    var trailerStart = eoi + 2;
-    var trailerLen = view.byteLength - trailerStart;
-    if (trailerLen < 512) return null;
-
-    var xmpText = '';
-    if (xmpBytes) {
-      for (var k = 0; k < xmpBytes.length; k++) xmpText += String.fromCharCode(xmpBytes[k]);
-    }
+    var xmpText = latin1(xmpBytes);
     if (!/MotionPhoto|MicroVideo|MotionPhoto_Data/i.test(xmpText)) return null;
 
     // ① Container 目录
@@ -441,51 +483,91 @@
     var mOffset = xmpText.match(/[A-Za-z]+:MicroVideoOffset="(\d+)"/);
     var offset = mOffset ? parseInt(mOffset[1], 10) : null;
 
-    var valid = false;
     var style = 'unknown';
+    var trailerStart = -1;
+    var trailerLen = 0;
+    var valid = false;
+    var eoiKnown = false;
 
     if (declared > 0) {
       style = 'container';
-      valid = declared === trailerLen;
+      trailerStart = fileSize - declared;
+      trailerLen = declared;
+      valid = trailerLen >= 512 && trailerStart > 2;
     } else if (offset !== null) {
       style = 'microvideo';
-      valid = (view.byteLength - offset) === trailerStart;
-    } else if (trailerStart + 8 <= view.byteLength &&
-               view.getUint8(trailerStart + 4) === 0x66 && view.getUint8(trailerStart + 5) === 0x74) {
-      style = 'bare-mp4';
-      valid = true;
+      trailerStart = fileSize - offset;
+      trailerLen = offset;
+      valid = trailerLen >= 512 && trailerStart > 2;
     }
 
-    var trailer = null;
-    if (valid) {
-      trailer = new Uint8Array(trailerLen);
-      for (var v = 0; v < trailerLen; v++) trailer[v] = view.getUint8(trailerStart + v);
+    if (full && sosOff >= 0) {
+      // 整文件在手：照旧用真实 EOI 做严格校验
+      var eoi = findEoi(view, sosOff);
+      if (eoi < 0) return null;
+      trailerStart = eoi + 2;
+      trailerLen = fileSize - trailerStart;
+      if (style === 'container') {
+        valid = declared === trailerLen;
+      } else if (style === 'microvideo') {
+        valid = (fileSize - offset) === trailerStart;
+      } else if (trailerStart + 8 <= fileSize &&
+                 view.getUint8(trailerStart + 4) === 0x66 && view.getUint8(trailerStart + 5) === 0x74) {
+        style = 'bare-mp4';
+        valid = true;
+      }
+      if (trailerLen < 512) valid = false;
+      eoiKnown = true;
+    } else if (style === 'unknown') {
+      return null;
     }
+    if (!valid) return null;
 
-    return {
+    var motion = {
       style: style,
       items: items,
       declared: declared,
       offset: offset,
       trailerStart: trailerStart,
       trailerLength: trailerLen,
-      preserves: valid,
+      preserves: true,
       xmp: xmpBytes,
-      trailer: trailer
+      trailer: null,
+      trailerSrc: null
     };
+    if (!eoiKnown) {
+      // 头部解析：EOI 应当紧贴 trailer 起点，交给 readFile 回读 2 字节确认
+      motion.eoiCheck = trailerStart - 2;
+      motion.preserves = false;
+      return motion;
+    }
+    if (opts.lazyTrailer) {
+      motion.trailerSrc = { file: opts.file || null, start: trailerStart, length: trailerLen };
+    } else {
+      motion.trailer = bytesOf(view).slice(trailerStart, trailerStart + trailerLen);
+    }
+    return motion;
+  }
+
+  /** 动态照片的尾部视频可能有几十 MB：只在导出时按需 slice，导入时不再整块拷进内存 */
+  async function readTrailer(motion) {
+    if (!motion) return null;
+    if (motion.trailer) return motion.trailer;
+    var s = motion.trailerSrc;
+    if (!s || !s.file || !(s.length > 0)) return null;
+    return new Uint8Array(await s.file.slice(s.start, s.start + s.length).arrayBuffer());
   }
 
 
   function copySeg(view, off, len) {
-    var out = new Uint8Array(2 + len);
-    for (var i = 0; i < out.length; i++) out[i] = view.getUint8(off + i);
-    return out;
+    return bytesOf(view).slice(off, off + 2 + len);
   }
 
   function segHeadIs(view, off, len, tag) {
     if (len < tag.length + 3) return false;
+    var u8 = bytesOf(view), p = off + 4;
     for (var i = 0; i < tag.length; i++) {
-      if (view.getUint8(off + 4 + i) !== tag.charCodeAt(i)) return false;
+      if (u8[p + i] !== tag.charCodeAt(i)) return false;
     }
     return true;
   }
@@ -531,40 +613,26 @@
 
   /** APP2 是否是以 urn:iso:std:iso 开头的增益图标记段 */
   function isGainMarker(view, off, len) {
-    var tag = 'urn:iso:std:iso';
-    if (len < tag.length + 3) return false;
-    for (var i = 0; i < tag.length; i++) {
-      if (view.getUint8(off + 4 + i) !== tag.charCodeAt(i)) return false;
-    }
-    return true;
+    return segHeadIs(view, off, len, 'urn:iso:std:iso');
   }
 
   /** APP2 中是否含 ISO 21496-1 增益图标识 */
   function hasGainMap(view, off, len) {
     var end = Math.min(view.byteLength, off + 2 + len - 2);
-    var tag = '21496';
-    for (var i = off + 4; i < end - tag.length; i++) {
-      var hit = true;
-      for (var j = 0; j < tag.length; j++) {
-        if (view.getUint8(i + j) !== tag.charCodeAt(j)) { hit = false; break; }
-      }
-      if (hit) return true;
-    }
-    return false;
+    if (end <= off + 4) return false;
+    return findBytes(bytesOf(view), '21496', off + 4, end) >= 0;
   }
 
   function detectHdr(view, off, len) {
     var end = Math.min(view.byteLength, off + 2 + len - 2);
-    var tag = 'hdrgm';
-    for (var i = off + 4; i < end - tag.length; i++) {
-      var hit = true;
-      for (var j = 0; j < tag.length; j++) {
-        if (view.getUint8(i + j) !== tag.charCodeAt(j)) { hit = false; break; }
-      }
-      if (hit) return true;
-    }
-    return false;
+    if (end <= off + 4) return false;
+    return findBytes(bytesOf(view), 'hdrgm', off + 4, end) >= 0;
   }
+
+  // 只读文件头：绝大多数 JPEG 的元数据段（EXIF / XMP / MPF / 增益图）都在前 100KB 内。
+  // 头部解析拿不到 EOI，动态照片的 trailer 起点用「文件尾 - 声明长度」反推并回读 2 字节确认；
+  // 尾部视频只在导出时 File.slice 取，导入阶段不再整块读进内存。
+  var HEAD_BYTES = 256 * 1024;
 
   async function readFile(file) {
     if (!file) return null;
@@ -572,11 +640,41 @@
     var isHeif = /hei[cf]/i.test(file.type) || /\.(heic|heif|hif)$/i.test(file.name || '');
     if (!isJpeg && !isHeif) return null;
     try {
-      var buf = await file.arrayBuffer();
-      return isHeif && !isJpeg ? parseHeif(buf) : parse(buf);
+      if (isHeif && !isJpeg) return parseHeif(await file.arrayBuffer());
+      var size = file.size || 0;
+      if (!size) return null;
+      var head = await file.slice(0, Math.min(HEAD_BYTES, size)).arrayBuffer();
+      var parsed;
+      if (head.byteLength >= size) {
+        parsed = parse(head, { fileSize: size, full: true, lazyTrailer: true, file: file });
+      } else {
+        parsed = parse(head, { fileSize: size, full: false });
+        if (parsed && parsed._truncated) {           // 元数据超过头部窗口（少见）：退回整文件
+          parsed = parse(await file.arrayBuffer(),
+            { fileSize: size, full: true, lazyTrailer: true, file: file });
+        }
+      }
+      return await finishMotion(parsed, file);
     } catch (err) {
       return null;
     }
+  }
+
+  /** 头部解析后确认 EOI，并把 trailer 记录成「按需 slice」 */
+  async function finishMotion(parsed, file) {
+    if (!parsed || !parsed.motion) return parsed;
+    var m = parsed.motion;
+    if (m.eoiCheck >= 0) {
+      var two = new Uint8Array(await file.slice(m.eoiCheck, m.eoiCheck + 2).arrayBuffer());
+      var okEoi = two.length === 2 && two[0] === 0xFF && two[1] === 0xD9;
+      delete m.eoiCheck;
+      if (!okEoi) { parsed.motion = null; return parsed; }
+      m.preserves = true;
+    }
+    if (!m.trailer && !m.trailerSrc) {
+      m.trailerSrc = { file: file, start: m.trailerStart, length: m.trailerLength };
+    }
+    return parsed;
   }
 
   /* ── 格式化 ── */
@@ -664,6 +762,7 @@
     parse: parse,
     parseHeif: parseHeif,
     readFile: readFile,
+    readTrailer: readTrailer,
     formatAperture: formatAperture,
     formatShutter: formatShutter,
     formatISO: formatISO,

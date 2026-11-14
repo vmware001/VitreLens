@@ -30,7 +30,8 @@
     ior: 1.46, radius: 100, bevel: 24, edgeWidth: 36, frost: 20, chroma: 6,
     spec: 28, rim: 28, trans: 98, shadow: 18, white: 0,
     warp: 0, edge: 140, segments: 128, frostTone: 0,
-    format: 'jpeg', scale: 1, quality: 100
+    // 默认 92：50MP 实测 q100 出 30MB / 主线程 1.77s，q92 出 5.9MB / 0.8s，肉眼几乎无差
+    format: 'jpeg', scale: 1, quality: 92
   };
 
   var GLASS_KEYS = ['ior', 'radius', 'bevel', 'edgeWidth', 'frost', 'chroma', 'spec', 'rim',
@@ -92,18 +93,18 @@
   var state = Object.assign({}, DEFAULT_TEXT, DEFAULTS);
   var renderer = null;
   var rafId = 0;
-  var work = document.createElement('canvas');
-  var wctx = work.getContext('2d');
   var exporting = false;
+  var glFailToast = false;
 
   try {
     renderer = new window.LG.GlassRenderer();
   } catch (err) {
     console.error(err);
-    setTimeout(function () { toast('浏览器未启用 WebGL，无法渲染玻璃效果', 'warn'); }, 600);
   }
 
   /* ═══════════ 工具 ═══════════ */
+
+  var REDUCED = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
   function toast(msg, kind) {
     var el = document.createElement('div');
@@ -114,6 +115,15 @@
       el.classList.add('is-out');
       setTimeout(function () { el.remove(); }, 260);
     }, 2400);
+  }
+
+  /** 首帧之后再跑非关键启动工作（空状态示例要画 1120×430 + 玻璃 pass） */
+  function whenIdle(fn) {
+    if (window.requestIdleCallback) {
+      window.requestIdleCallback(function () { fn(); }, { timeout: 900 });
+    } else {
+      requestAnimationFrame(function () { requestAnimationFrame(fn); });
+    }
   }
 
   function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -169,7 +179,8 @@
           best.display(data, function (result) {
             if (!result) return rej(new Error('HEIC 解码失败'));
             ctx.putImageData(data, 0, 0);
-            res(canvas);
+            // buffer 一起带回去：解析 EXIF 直接用它，不必再为整个文件 arrayBuffer 一遍
+            res({ img: canvas, buffer: buf });
           });
         });
       });
@@ -188,8 +199,8 @@
 
   async function loadImage(file) {
     if (isHeic(file)) {
-      var canvas = await decodeHeic(file);
-      return { img: canvas, thumb: makeThumb(canvas, canvas.width, canvas.height) };
+      var dec = await decodeHeic(file);
+      return { img: dec.img, buffer: dec.buffer, thumb: makeThumb(dec.img, dec.img.width, dec.img.height) };
     }
     return new Promise(function (resolve) {
       var url = URL.createObjectURL(file);
@@ -309,85 +320,123 @@
 
   var DETAIL_ZOOM = 2;
 
+  /**
+   * 预览渲染。
+   * 特写模式下可见区只是整幅里的一个窗口。旧实现用 W = viewW / ratio 把整幅按「等效分辨率」
+   * 重渲一次再裁，水印越窄浪费越大（实测 40% 时 6.62MP/帧，DPR2 下 26.5MP/帧）。
+   * 现在：版式仍算在同一个「等效整幅」空间里（保证裁切位置/折射/文字与旧版完全一致），
+   * 但只把窗口按输出分辨率重采样一次交给 2D 铺底，GL 只着色「水印包围盒 + 阴影/折射边距」，
+   * 画布尺寸与视口同量级、且不随水印宽度变化。
+   */
   function render() {
     var img = currentImage();
-    if (!img || !renderer) return;
+    if (!img) return;
 
     var fit = fitSize(img);
     var dpr = Math.min(window.devicePixelRatio || 1, 2);
     var detail = state.viewMode === 'detail';
-    var W = Math.round(fit.w * dpr);
-    var H = Math.round(fit.h * dpr);
-    var outCssW = fit.w;
-    var dprEff = dpr;
+    var avail = Math.max(240, stageScroll.clientWidth - 28);
 
-    // 特写：铺满舞台宽度，但像素密度不超过原图能提供的细节
+    var lay = null, reg = null, outW = 2, outH = 2, cssW = fit.w, k = 1;
+
     if (detail) {
-      var lay0 = Watermark.layout(W, H, state);
+      // 先在「原图像素」空间算一次版式，拿到裁切窗口的原始宽度 → 决定输出像素密度
+      var lay0 = Watermark.layout(img.w, img.h, state);
       if (lay0.hasContent) {
-        var c0 = detailCrop(lay0, W, H);
-        var ratio = c0.w / W;
-        var avail = Math.max(240, stageScroll.clientWidth - 28);
-        var srcW = img.w * ratio;
-        dprEff = Math.min(dpr, Math.max(0.6, srcW / avail));
-        outCssW = avail;
-        var viewW = Math.round(avail * dprEff);
-        W = Math.round(viewW / ratio);
-        H = Math.max(2, Math.round(W * (img.h / img.w)));
-        fit.w = W / dpr;
-        fit.h = H / dpr;
+        var c0 = detailCrop(lay0, img.w, img.h);
+        var dprEff = Math.min(dpr, Math.max(0.6, c0.w / avail));
+        var outTarget = Math.max(240, avail * dprEff);
+        k = outTarget / c0.w;                       // 输出像素 / 原图像素
+        var vW = Math.max(2, Math.round(img.w * k));
+        var vH = Math.max(2, Math.round(img.h * k));
+        lay = Watermark.layout(vW, vH, state);
+        reg = detailCrop(lay, vW, vH);
+        outW = Math.max(2, Math.round(reg.w));
+        outH = Math.max(2, Math.round(reg.h));
+        cssW = avail;
+      } else {
+        detail = false;                             // 没有水印内容 → 这一帧按整图出
       }
     }
+    if (!detail) {
+      outW = Math.max(2, Math.round(fit.w * dpr));
+      outH = Math.max(2, Math.round(fit.h * dpr));
+      k = outW / img.w;                             // 输出像素 / 原图像素
+      lay = Watermark.layout(outW, outH, state);
+      reg = { x: 0, y: 0, w: outW, h: outH };
+      cssW = fit.w;
+    }
 
-    var lay = Watermark.layout(W, H, state);
+    if (view.width !== outW) view.width = outW;
+    if (view.height !== outH) view.height = outH;
+    vctx.setTransform(1, 0, 0, 1, 0, 0);
+    vctx.clearRect(0, 0, outW, outH);
 
     if (!lay.hasContent) {
-      if (view.width !== W) view.width = W;
-      if (view.height !== H) view.height = H;
-      vctx.clearRect(0, 0, W, H);
-      vctx.drawImage(img.el, 0, 0, W, H);
+      // 水印内容为空：原图直出（不启 GL）
+      vctx.drawImage(img.el, 0, 0, outW, outH);
       $('#stageHint').hidden = false;
-      shell.style.width = fit.w + 'px';
+      shell.style.width = cssW + 'px';
       updateExportInfo();
       return;
     }
     $('#stageHint').hidden = true;
 
-    // 全图合成到工作画布
-    if (work.width !== W) work.width = W;
-    if (work.height !== H) work.height = H;
+    // 1) 2D 原图铺底：窗口按输出分辨率重采样一次（GL 之外的部分全走这条路径）
+    var srcRect = detail
+      ? { x: reg.x / k, y: reg.y / k, w: reg.w / k, h: reg.h / k }
+      : { x: 0, y: 0, w: img.w, h: img.h };
+    vctx.drawImage(img.el, srcRect.x, srcRect.y, srcRect.w, srcRect.h, 0, 0, outW, outH);
 
-    var glCanvas;
-    try {
-      glCanvas = renderer.render(img.el, W, H, lay.panel, glassOpts(state));
-    } catch (err) {
-      console.error(err);
-      toast('渲染失败：' + err.message, 'warn');
-      return;
+    // 2) GL 只画水印条带
+    if (renderer) {
+      var u = lay.u;
+      var p = lay.panel;
+      var px = p.x - reg.x, py = p.y - reg.y;        // 面板在窗口里的位置
+      // 边距要罩住投影（spread = 12*u_scale）与边缘折射（≤0.45*面板高）
+      var mx = Math.max(40 * u, 0.5 * p.h + 12 * u);
+      var my = Math.max(60 * u, 0.3 * p.h + 12 * u);
+      var x0 = Math.max(0, Math.floor(px - mx));
+      var y0 = Math.max(0, Math.floor(py - my));
+      var x1 = Math.min(outW, Math.ceil(px + p.w + mx));
+      var y1 = Math.min(outH, Math.ceil(py + p.h + my));
+      if (x1 - x0 >= 2 && y1 - y0 >= 2) {
+        // 特写时窗口左右只剩 2% 边距，边缘折射会取到窗口外的像素：
+        // 给纹理补一圈 pad（只增加纹理面积，不增加片元数）
+        var padPx = detail ? Math.ceil(48 * u) + 8 : 0;
+        var padImg = padPx > 0 ? padPx / k : 0;
+        var tx = Math.max(0, srcRect.x - padImg);
+        var ty = Math.max(0, srcRect.y - padImg);
+        var tx2 = Math.min(img.w, srcRect.x + srcRect.w + padImg);
+        var ty2 = Math.min(img.h, srcRect.y + srcRect.h + padImg);
+        var tex = { x: tx, y: ty, w: Math.max(1, tx2 - tx), h: Math.max(1, ty2 - ty) };
+        var texW = Math.max(2, Math.round(tex.w * k));
+        var texH = Math.max(2, Math.round(tex.h * k));
+        var dx = Math.round((srcRect.x - tex.x) * k);
+        var dy = Math.round((srcRect.y - tex.y) * k);
+        try {
+          var lc = renderer.renderWindow(img.el, texW, texH, {
+            x: px + dx, y: py + dy, w: p.w, h: p.h, r: p.r, bevel: p.bevel, edgeW: p.edgeW
+          }, glassOpts(state), lay.W, tex, img.w / tex.w,
+            { x: x0 + dx, y: y0 + dy, w: x1 - x0, h: y1 - y0 });
+          if (lc) {
+            vctx.drawImage(renderer.canvas, lc.sx, lc.sy, lc.w, lc.h,
+              lc.wx - dx, lc.wy - dy, lc.w, lc.h);
+          }
+        } catch (err) {
+          console.error(err);
+          if (!glFailToast) { glFailToast = true; toast('玻璃渲染失败，已回退为原图 + 文字', 'warn'); }
+        }
+      }
     }
 
-    wctx.clearRect(0, 0, W, H);
-    wctx.drawImage(glCanvas, 0, 0);
-    Watermark.draw(wctx, lay, state);
-
-    // 输出：整图 or 水印特写
-    var outW = W, outH = H, src = null, cssW = fit.w;
-
-    if (detail) {
-      src = detailCrop(lay, W, H);
-      cssW = outCssW;
-      outW = Math.round(cssW * dprEff);
-      outH = Math.max(80, Math.round(outW * src.h / src.w));
-    }
-
-    if (view.width !== outW) view.width = outW;
-    if (view.height !== outH) view.height = outH;
-    vctx.clearRect(0, 0, outW, outH);
-    if (src) {
-      vctx.drawImage(work, src.x, src.y, src.w, src.h, 0, 0, outW, outH);
-    } else {
-      vctx.drawImage(work, 0, 0);
-    }
+    // 3) 文字层：版式坐标 → 画布坐标只是平移（材质回读靠 lay.vx/vy）
+    var ox = Math.round(reg.x), oy = Math.round(reg.y);
+    lay.vx = ox;
+    lay.vy = oy;
+    vctx.setTransform(1, 0, 0, 1, -ox, -oy);
+    Watermark.draw(vctx, lay, state);
+    vctx.setTransform(1, 0, 0, 1, 0, 0);
 
     shell.style.width = cssW + 'px';
     updateViewportState();
@@ -405,12 +454,11 @@
     var el = $('#exportInfo');
     if (!el) return;
     if (!img) { el.textContent = '导入照片后显示导出尺寸'; return; }
-    var w = Math.round(img.w * state.scale);
-    var h = Math.round(img.h * state.scale);
-    var cap = MAX_EXPORT;
-    var capped = Math.max(w, h) > cap;
-    if (capped) { var k = cap / Math.max(w, h); w = Math.round(w * k); h = Math.round(h * k); }
-    el.textContent = '导出尺寸 ' + w + ' × ' + h + (capped ? '（已限制到上限）' : '');
+    var size = exportSize(img.w, img.h, state.scale);
+    var note = '';
+    if (size.capped === 'edge') note = '（已限制到单边 ' + MAX_EXPORT + 'px）';
+    else if (size.capped === 'area') note = '（已按 ' + Math.round(MAX_EXPORT_AREA / 1e6) + 'MP 面积上限等比缩放）';
+    el.textContent = '导出尺寸 ' + size.w + ' × ' + size.h + note;
   }
 
   /* ═══════════ 空状态效果示例 ═══════════ */
@@ -527,7 +575,9 @@
     var canvas = $('#demoCanvas');
     var wrap = $('#dzDemo');
     if (!canvas || !wrap) return;
-    if (!renderer) { wrap.classList.add('is-off'); return; }
+    if (!renderer || dropzone.hidden) { wrap.classList.add('is-off'); return; }
+    // ≤980px 时 .dz-demo 是 display:none：别白画一张 1120×430（11 次 ctx.filter 模糊 + 玻璃 pass）
+    if (!wrap.getClientRects().length) { wrap.classList.add('is-off'); return; }
 
     var W = 1120, H = 430;
     var bg = document.createElement('canvas');
@@ -585,7 +635,7 @@
       }
       if (!loaded) { toast('无法读取：' + file.name, 'warn'); continue; }
 
-      var exif = await Exif.readFile(file);
+      var exif = loaded.buffer ? Exif.parseHeif(loaded.buffer) : await Exif.readFile(file);
       var text = textFromExif(exif);
       var el = loaded.img;
       images.push({
@@ -621,6 +671,8 @@
     var btn = $('#btnExportAll');
     btn.hidden = images.length < 2;
     btn.textContent = '导出全部（' + images.length + ' 张）';
+    // 胶片条出现时给 HUD 让位（窄屏两者 bottom 区间重叠）
+    stage.classList.toggle('has-film', images.length > 1);
   }
 
   function select(index, firstLoad) {
@@ -641,6 +693,14 @@
     updateBatchUI();
 
     hudSize.textContent = img.w + ' × ' + img.h;
+
+    // 没存过偏好也没手动切过时：窄屏或竖图默认「整图」——
+    // 特写的裁切比例由水印面板决定（宽而扁），竖图上只剩一条细带
+    if (!viewModeStored && !viewModeTouched) {
+      state.viewMode = (window.innerWidth < 980 || img.h > img.w) ? 'full' : 'detail';
+    }
+    syncViewToggle();
+
     var e = img.exif;
     var hdr = !!(e && e.hdr);
     var motion = !!(e && e.motion);
@@ -944,7 +1004,7 @@
     var v = parseFloat(input.value);
     var r = max > min ? (v - min) / (max - min) : 0;
     r = Math.max(0, Math.min(1, r));
-    input.style.setProperty('--p', (r * 100).toFixed(2) + '%');
+    // 原来这里还写了个 --p 变量，CSS 里根本没有消费者，去掉少一次样式失效
 
     var wrap = input.parentNode;
     if (!wrap || !wrap.classList || !wrap.classList.contains('range-wrap')) return;
@@ -963,7 +1023,9 @@
     var wrap = $('#viewToggle');
     if (!wrap) return;
     wrap.querySelectorAll('button').forEach(function (b) {
-      b.classList.toggle('is-on', b.dataset.view === (state.viewMode || 'detail'));
+      var on = b.dataset.view === (state.viewMode || 'detail');
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
   }
 
@@ -976,26 +1038,36 @@
       if (state[key] === undefined) return;
       input.value = toSlider(key, state[key]);
       out.textContent = fmtValue(key, state[key]);
+      input.setAttribute('aria-valuetext', ctrlLabel(ctrl) + ' ' + fmtValue(key, state[key]));
       paintRange(input);
     });
 
     document.querySelectorAll('.seg').forEach(function (seg) {
       var key = seg.dataset.key;
       seg.querySelectorAll('button').forEach(function (b) {
-        b.classList.toggle('is-on', b.dataset.value === String(state[key]));
+        var on = b.dataset.value === String(state[key]);
+        b.classList.toggle('is-on', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
       });
     });
 
     document.querySelectorAll('[data-toggle]').forEach(function (btn) {
       var key = btn.dataset.toggle;
       var on = !!state[key];
-      if (btn.classList.contains('switch')) btn.setAttribute('aria-pressed', String(on));
-      else btn.classList.toggle('is-on', on);
+      btn.classList.toggle('is-on', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
 
     $('#qualityCtrl').style.display = state.format === 'jpeg' ? '' : 'none';
     if ($('#fTextColor')) $('#fTextColor').value = state.textColor || '#ffffff';
     $('#fMeta').value = state.meta || '';
+  }
+
+  /** 控件的中文名（a11y 用）：优先视觉 label，其次 data-key */
+  function ctrlLabel(ctrl) {
+    var el = ctrl.querySelector('.ctrl-top .ctrl-lab') || ctrl.querySelector('.ctrl-top span');
+    if (!el) return ctrl.dataset.key;
+    return (el.textContent || '').trim() || ctrl.dataset.key;
   }
 
   /* ── 滑块：自绘玻璃轨道 + 触屏长按拖动（避免滑动页面误触） ── */
@@ -1173,6 +1245,8 @@
     var springLast = 0;
 
     function kickSpring() {
+      // 系统要求减少动态效果时不做弹簧回弹，直接跟手
+      if (REDUCED) { commit(springTarget); return; }
       if (springOn) return;
       springOn = true;
       springLast = 0;
@@ -1304,6 +1378,9 @@
     }, { passive: false });
   }
 
+  /* 只影响导出、不影响预览的参数：拖动它们不再触发整幅重渲 */
+  var EXPORT_ONLY = ['scale', 'quality', 'format'];
+
   function bindControls() {
     document.querySelectorAll('.ctrl').forEach(function (ctrl) {
       var key = ctrl.dataset.key;
@@ -1314,6 +1391,23 @@
       input.step = ctrl.dataset.step;
       input.value = toSlider(key, state[key]);
       out.textContent = fmtValue(key, state[key]);
+
+      // 无障碍：视觉上的名字是 <span>，这里换成 <label for> 并补 aria-valuetext
+      var lab = ctrl.querySelector('.ctrl-top span');
+      var id = 'rng-' + key;
+      input.id = id;
+      input.setAttribute('aria-valuetext', ctrlLabel(ctrl) + ' ' + fmtValue(key, state[key]));
+      if (lab) {
+        var l = document.createElement('label');
+        l.className = 'ctrl-lab';
+        l.setAttribute('for', id);
+        l.textContent = lab.textContent;
+        if (lab.title) l.title = lab.title;
+        lab.parentNode.replaceChild(l, lab);
+      }
+      out.id = 'out-' + key;
+      out.setAttribute('for', id);
+
       paintRange(input);
 
       enhanceSlider(ctrl, input);
@@ -1321,9 +1415,13 @@
       input.addEventListener('input', function () {
         state[key] = fromSlider(key, parseFloat(input.value));
         out.textContent = fmtValue(key, state[key]);
+        input.setAttribute('aria-valuetext', ctrlLabel(ctrl) + ' ' + fmtValue(key, state[key]));
         paintRange(input);
-        if (key === 'scale') updateExportInfo();
-        requestRender();
+        if (EXPORT_ONLY.indexOf(key) >= 0) {
+          updateExportInfo();          // 只更新导出尺寸提示，不重渲预览
+        } else {
+          requestRender();
+        }
         saveSettings();
         if (GLASS_KEYS.indexOf(key) >= 0) {
           document.querySelectorAll('.preset').forEach(function (p) { p.classList.remove('is-on'); });
@@ -1333,18 +1431,28 @@
 
     document.querySelectorAll('.seg').forEach(function (seg) {
       var key = seg.dataset.key;
+      // 分段控件在视觉上是一组单选，补上 radio 语义
+      seg.setAttribute('role', 'radiogroup');
+      var field = seg.parentNode;
+      var fl = field && field.querySelector ? field.querySelector('.field-label') : null;
+      if (fl) seg.setAttribute('aria-label', (fl.textContent || '').trim());
       seg.querySelectorAll('button').forEach(function (b) {
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-checked', b.classList.contains('is-on') ? 'true' : 'false');
         b.addEventListener('click', function () {
           if (key === 'logoRight') state[key] = b.dataset.value === 'true';
           else if (key === 'frostTone') state[key] = parseInt(b.dataset.value, 10);
           else state[key] = b.dataset.value;
           seg.querySelectorAll('button').forEach(function (x) {
-            x.classList.toggle('is-on', x === b);
+            var on = x === b;
+            x.classList.toggle('is-on', on);
+            x.setAttribute('aria-checked', on ? 'true' : 'false');
           });
           if (key === 'format') {
             $('#qualityCtrl').style.display = state.format === 'jpeg' ? '' : 'none';
           }
-          requestRender();
+          if (EXPORT_ONLY.indexOf(key) >= 0) updateExportInfo();
+          else requestRender();
           saveSettings();
         });
       });
@@ -1354,8 +1462,8 @@
       btn.addEventListener('click', function () {
         var key = btn.dataset.toggle;
         state[key] = !state[key];
-        if (btn.classList.contains('switch')) btn.setAttribute('aria-pressed', String(state[key]));
-        else btn.classList.toggle('is-on', state[key]);
+        btn.classList.toggle('is-on', state[key]);
+        btn.setAttribute('aria-pressed', state[key] ? 'true' : 'false');
         requestRender();
         saveSettings();
       });
@@ -1392,6 +1500,8 @@
     var btn = e.target.closest ? e.target.closest('button[data-view]') : null;
     if (!btn) return;
     state.viewMode = btn.dataset.view;
+    viewModeTouched = true;
+    viewModeStored = true;        // 手动切过就固定下来，不再按画面方向自动选
     haptic(10);
     syncViewToggle();
     requestRender();
@@ -1425,14 +1535,35 @@
 
   var MAX_EXPORT = 16384;
 
-  function composeImage(img, s) {
-    var W = Math.round(img.w * s.scale);
-    var H = Math.round(img.h * s.scale);
-    if (Math.max(W, H) > MAX_EXPORT) {
-      var k = MAX_EXPORT / Math.max(W, H);
-      W = Math.round(W * k);
-      H = Math.round(H * k);
+  // 只限边长不够：16320×12240 的 200MP 源在 scale=1 时会直接建约 800MB 的 canvas。
+  // 桌面给 64MP；触屏设备（Safari 的 canvas 面积上限约 16.7MP）降到 32MP。
+  var MAX_EXPORT_AREA = (function () {
+    var coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    var mem = navigator.deviceMemory || 8;
+    return (coarse || mem <= 4) ? 32e6 : 64e6;
+  })();
+
+  /** 导出尺寸（单边 + 面积双上限），预览信息与真正导出共用同一套算法 */
+  function exportSize(iw, ih, scale) {
+    var w = Math.max(1, Math.round(iw * scale));
+    var h = Math.max(1, Math.round(ih * scale));
+    var capped = '';
+    if (Math.max(w, h) > MAX_EXPORT) {
+      var k1 = MAX_EXPORT / Math.max(w, h);
+      w = Math.round(w * k1); h = Math.round(h * k1);
+      capped = 'edge';
     }
+    if (w * h > MAX_EXPORT_AREA) {
+      var k2 = Math.sqrt(MAX_EXPORT_AREA / (w * h));
+      w = Math.round(w * k2); h = Math.round(h * k2);
+      capped = 'area';
+    }
+    return { w: Math.max(1, w), h: Math.max(1, h), capped: capped };
+  }
+
+  function composeImage(img, s) {
+    var size = exportSize(img.w, img.h, s.scale);
+    var W = size.w, H = size.h;
 
     var out = document.createElement('canvas');
     out.width = W;
@@ -1462,9 +1593,37 @@
     return out;
   }
 
+  /* 导出用独立的 GL 实例：条带纹理与预览纹理互不影响。
+     旧实现复用预览的 renderer，renderCropped 里 `this.image = null` 会让下一次预览
+     重跑「整图上传 550ms + 重建模糊 293ms」，导出完白等 1s。 */
+  var exportRenderer = null;
+  var exportRendererOff = false;
+  function getExportRenderer() {
+    if (exportRenderer || exportRendererOff) return exportRenderer;
+    try {
+      exportRenderer = new window.LG.GlassRenderer(8192);
+    } catch (err) {
+      console.error(err);
+      exportRendererOff = true;
+    }
+    return exportRenderer;
+  }
+
+  // 分条渲染时复用同一张 canvas，避免每个条带都 createElement 一张全高画布
+  var stripCanvas = null;
+  function getStripCanvas(w, h) {
+    if (!stripCanvas) stripCanvas = document.createElement('canvas');
+    if (stripCanvas.width !== w || stripCanvas.height !== h) {
+      stripCanvas.width = w;
+      stripCanvas.height = h;
+    }
+    return stripCanvas;
+  }
+
   /** 只对水印附近区域做 WebGL，按 GPU 纹理上限分条渲染 */
   function drawGlassRegion(ctx, img, lay, W, H, s) {
-    if (!renderer) return;
+    var glr = getExportRenderer();
+    if (!glr) return;
     var p = lay.panel;
     var u = lay.u;
     var mx = 40 * u;
@@ -1476,7 +1635,7 @@
     var h = Math.min(H - y, Math.round(p.h + my * 2));
     if (w < 8 || h < 8) return;
 
-    var stripMax = Math.min(renderer.maxTex, 8000);
+    var stripMax = Math.min(glr.maxTex, 8000);
     var cols = Math.ceil(w / stripMax);
     var k = 1 / s.scale;
 
@@ -1485,14 +1644,14 @@
       var sw = Math.min(stripMax, w - i * stripMax);
       if (sw < 4) break;
 
-      var src = document.createElement('canvas');
-      src.width = Math.round(sw);
-      src.height = Math.round(h);
-      src.getContext('2d').drawImage(img.el,
+      var src = getStripCanvas(Math.round(sw), Math.round(h));
+      var sctx = src.getContext('2d');
+      sctx.clearRect(0, 0, src.width, src.height);
+      sctx.drawImage(img.el,
         sx * k, y * k, sw * k, h * k,
         0, 0, src.width, src.height);
 
-      var glCanvas = renderer.renderCropped(src, src.width, src.height, {
+      var glCanvas = glr.renderCropped(src, src.width, src.height, {
         x: p.x - sx,
         y: p.y - y,
         w: p.w,
@@ -1509,7 +1668,10 @@
   /** 把原始动态照片的内嵌数据（增益图 + MP4）与元数据段拼回导出的 JPEG */
   async function attachMotion(blob, motion) {
     try {
-      if (!motion || !motion.xmp || !motion.trailer) return null;
+      if (!motion || !motion.xmp) return null;
+      // trailer 只在导出时按需从原文件 slice（导入阶段不再整块读进内存）
+      var trailer = await Exif.readTrailer(motion);
+      if (!trailer) return null;
 
       var buf = new Uint8Array(await blob.arrayBuffer());
       if (buf[0] !== 0xFF || buf[1] !== 0xD8) return null;
@@ -1581,7 +1743,7 @@
         }
       }
 
-      var out = new Uint8Array(2 + metaLen + body.length + motion.trailer.length);
+      var out = new Uint8Array(2 + metaLen + body.length + trailer.length);
       var p = 0;
       out[p++] = 0xFF;
       out[p++] = 0xD8;
@@ -1590,10 +1752,10 @@
         p += segs[n].length;
       }
       out.set(body, p); p += body.length;
-      out.set(motion.trailer, p);
+      out.set(trailer, p);
 
-      // 自检：重新解析，确认动态目录与尾部依然自洽
-      var check = Exif.parse(out.buffer);
+      // 自检：重新解析，确认动态目录与尾部依然自洽（lazyTrailer：别再拷一份 10MB 尾部）
+      var check = Exif.parse(out.buffer, { lazyTrailer: true });
       if (!check || !check.motion || !check.motion.preserves) return null;
       if (check.motion.trailerLength !== motion.trailerLength) return null;
 
@@ -1604,25 +1766,37 @@
     }
   }
 
-  function toBlob(canvas, s) {
+  function toBlob(canvas, s, qualityOverride) {
     return new Promise(function (resolve) {
       var mime = s.format === 'jpeg' ? 'image/jpeg' : 'image/png';
-      var q = s.format === 'jpeg' ? s.quality / 100 : undefined;
+      var q = s.format === 'jpeg'
+        ? (qualityOverride || s.quality) / 100
+        : undefined;
       canvas.toBlob(function (b) { resolve(b); }, mime, q);
     });
   }
 
   async function exportImages(list) {
-    if (!list.length || exporting || !renderer) return;
+    if (!list.length || exporting) return;
     exporting = true;
     setBusy(true);
+    // 导出开始时快照参数：批处理中途改滑块不会让后面的图用新值
+    var base = Object.assign({}, state);
 
     try {
       for (var i = 0; i < list.length; i++) {
         var img = list[i];
-        var s = Object.assign({}, state, img.text);
+        var s = Object.assign({}, base, img.text);
+        var size = exportSize(img.w, img.h, s.scale);
+        if (size.capped === 'area') {
+          toast('超过 ' + Math.round(MAX_EXPORT_AREA / 1e6) + 'MP 面积上限，已缩放到 ' + size.w + '×' + size.h, 'warn');
+        }
         var canvas = composeImage(img, s);
         var blob = await toBlob(canvas, s);
+        if (!blob && s.format === 'jpeg') {
+          // 大图偶发编码失败：降一档质量重试一次
+          blob = await toBlob(canvas, s, Math.max(70, Math.min(85, s.quality - 8)));
+        }
         if (!blob) { toast('导出失败', 'warn'); continue; }
 
         var motion = img.exif && img.exif.motion;
@@ -1646,6 +1820,7 @@
     } finally {
       exporting = false;
       setBusy(false);
+      // 导出用的是独立 GL 实例，预览纹理没有失效：这一帧不会重传整图/重建模糊
       requestRender();
     }
   }
@@ -1665,6 +1840,9 @@
   var STORE_KEY = 'vitrelens.settings.v1';
 
   var saveTimer = 0;
+  var viewModeStored = false;      // localStorage / 本次会话里是否已有明确的预览模式偏好
+  var viewModeTouched = false;
+
   function saveSettings() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
@@ -1677,13 +1855,17 @@
     }, 400);
   }
 
+  /** 读设置。viewMode 是否存过要单独记：没存过时按画面方向给默认值 */
   function loadSettings() {
     try {
       var raw = localStorage.getItem(STORE_KEY);
       if (!raw) return;
       var s = JSON.parse(raw);
       Object.keys(DEFAULTS).forEach(function (k) {
-        if (s[k] !== undefined && typeof s[k] === typeof DEFAULTS[k]) state[k] = s[k];
+        if (s[k] !== undefined && typeof s[k] === typeof DEFAULTS[k]) {
+          state[k] = s[k];
+          if (k === 'viewMode') viewModeStored = true;
+        }
       });
     } catch (err) { /* ignore */ }
   }
@@ -1761,12 +1943,22 @@
   });
 
   // 拖拽
+  // enter/leave 必须成对计数：原来只在 relatedTarget 为空时才减，
+  // 在子元素之间移动会让 dragDepth 只增不减，遮罩永久卡住。
   var dragDepth = 0;
+  var dragTimer = 0;
+  function dragReset() {
+    dragDepth = 0;
+    clearTimeout(dragTimer);
+    dragOverlay.classList.remove('is-on');
+  }
   window.addEventListener('dragenter', function (e) {
     if (!e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
     e.preventDefault();
     dragDepth++;
     dragOverlay.classList.add('is-on');
+    clearTimeout(dragTimer);
+    dragTimer = setTimeout(dragReset, 15000);   // 兜底：个别浏览器不发 dragleave
   });
   window.addEventListener('dragover', function (e) {
     if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) {
@@ -1775,15 +1967,14 @@
     }
   });
   window.addEventListener('dragleave', function (e) {
-    if (e.relatedTarget) return;
+    if (!e.dataTransfer || Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') < 0) return;
     dragDepth = Math.max(0, dragDepth - 1);
-    if (!dragDepth) dragOverlay.classList.remove('is-on');
+    if (!dragDepth) dragReset();
   });
   window.addEventListener('drop', function (e) {
     if (!e.dataTransfer) return;
     e.preventDefault();
-    dragDepth = 0;
-    dragOverlay.classList.remove('is-on');
+    dragReset();
     if (e.dataTransfer.files && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   });
 
@@ -1838,7 +2029,6 @@
   installThumbFilter();
   buildBrands();
   buildParamChips();
-  renderDemo();
   bindControls();
   bindTabs();
   bindColorControls();
@@ -1846,10 +2036,17 @@
   syncBrand();
   buildSubChips();
 
+  // 空状态示例要画 1120×430 场景 + 玻璃 pass，推到首帧之后，避免和首屏抢主线程
+  whenIdle(renderDemo);
+
   window.LG.app = { state: state, render: render, requestRender: requestRender, images: images };
 
   if (!renderer) {
-    $('#btnExport').disabled = true;
+    // 无 WebGL：预览退化为「原图 + 文字水印」（render 里的 GL 段会跳过），导出仍然可用
+    $('#btnExport').disabled = true;      // 需等导入后再启用（select() 里会打开）
     $('#btnExport2').disabled = true;
+    setTimeout(function () {
+      toast('浏览器未启用 WebGL，已回退为原图 + 文字水印预览', 'warn');
+    }, 600);
   }
 })();

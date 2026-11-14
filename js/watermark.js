@@ -19,20 +19,44 @@
     return (weight || 600) + ' ' + size.toFixed(2) + 'px ' + (STACKS[stack] || STACKS.sans);
   }
 
+  /* measureText 在版式计算 + 逐字绘制里每帧要跑上百次（拖滑块时更明显）。
+     结果只取决于 (字体, 字符)，字体是系统字体不存在晚加载失效，缓存即可。 */
+  var wCache = {};
+  var wCacheN = 0;
+  var W_CACHE_MAX = 480;
+  var mCache = {};
+  var mCacheN = 0;
+  var M_CACHE_MAX = 160;
+
+  function charAdvance(ctx, font, ch) {
+    var key = font + '\u0000' + ch;
+    var v = wCache[key];
+    if (v !== undefined) return v;
+    ctx.font = font;
+    v = ctx.measureText(ch).width;
+    if (wCacheN < W_CACHE_MAX) { wCache[key] = v; wCacheN++; }
+    return v;
+  }
+
   function metrics(ctx, text, font) {
+    var key = font + '\u0000' + text;
+    var hit = mCache[key];
+    if (hit) return hit;
     ctx.font = font;
     var m = ctx.measureText(text || ' ');
-    return {
+    var r = {
       width: m.width,
       asc: m.actualBoundingBoxAscent || 0,
       desc: m.actualBoundingBoxDescent || 0
     };
+    if (mCacheN < M_CACHE_MAX) { mCache[key] = r; mCacheN++; }
+    return r;
   }
 
-  var trackedCtx = null;
   function drawTracked(ctx, text, x, baseline, tracking, slant) {
     // 逐字绘制，保证跨浏览器一致的字距
     var chars = String(text || '').split('');
+    var font = ctx.font;             // 取一次，逐字宽度按 (字体, 字符) 缓存
     ctx.save();
     ctx.translate(x, baseline);
     if (slant) ctx.transform(1, 0, -slant, 1, 0, 0);
@@ -41,7 +65,7 @@
     var cx = 0;
     for (var i = 0; i < chars.length; i++) {
       ctx.fillText(chars[i], cx, 0);
-      cx += ctx.measureText(chars[i]).width + tracking;
+      cx += charAdvance(ctx, font, chars[i]) + tracking;
     }
     ctx.restore();
   }
@@ -50,7 +74,7 @@
     ctx.font = font;
     var chars = String(text || '').split('');
     var w = 0;
-    for (var i = 0; i < chars.length; i++) w += ctx.measureText(chars[i]).width;
+    for (var i = 0; i < chars.length; i++) w += charAdvance(ctx, font, chars[i]);
     return w + tracking * Math.max(0, chars.length - 1);
   }
 
@@ -247,6 +271,32 @@
     return c;
   }
 
+  /* 液态/磨砂材质的字形蒙版、内缘、描边只跟文字与字体有关，与背景无关：
+     按内容 key 缓存后，每帧只需要新建 1 张「背景取样」画布（原来 4 张）。
+     导出分辨率下单个字形可能有几百万像素，那时缓存反而吃显存，只当次用完就丢。 */
+  var gCache = {};
+  var gCacheN = 0;
+  var gCachePx = 0;
+  var G_CACHE_MAX = 24;
+  var G_CACHE_PX = 4e6;
+
+  function cachedGlyph(key, w, h, draw) {
+    var hit = gCache[key];
+    if (hit) return hit;
+    var c = makeCanvas(w, h);
+    draw(c.getContext('2d'));
+    var px = c.width * c.height;
+    if (px <= 1.5e6) {
+      if (gCacheN >= G_CACHE_MAX || gCachePx + px > G_CACHE_PX) {
+        gCache = {}; gCacheN = 0; gCachePx = 0;
+      }
+      gCache[key] = c;
+      gCacheN++;
+      gCachePx += px;
+    }
+    return c;
+  }
+
   /** 逐字绘制（fill 或 stroke），用于材质蒙版 */
   function drawTrackedMode(ctx, text, x, baseline, tracking, slant, mode, lineWidth) {
     var chars = String(text || '').split('');
@@ -286,37 +336,45 @@
       return;
     }
 
+    // 预览特写时画布只是整幅的一个窗口：文字仍按版式坐标绘制（调用方已 translate），
+    // 只有「从画布回读背景像素」这一处要减去窗口原点 lay.vx / lay.vy。
+    var vx = lay.vx || 0, vy = lay.vy || 0;
+    var cw = ctx.canvas.width, chh = ctx.canvas.height;
+
     var pad = Math.max(6, 14 * sl);
-    var bx = Math.max(0, Math.floor(n.x - pad));
-    var by = Math.max(0, Math.floor(n.baseline - n.asc - pad));
-    var bw = Math.min(ctx.canvas.width - bx, Math.ceil(n.width + pad * 2));
-    var bh = Math.min(ctx.canvas.height - by, Math.ceil(n.asc + n.desc + pad * 2));
+    var bx = Math.max(vx, Math.floor(n.x - pad));
+    var by = Math.max(vy, Math.floor(n.baseline - n.asc - pad));
+    var bw = Math.min(vx + cw - bx, Math.ceil(n.width + pad * 2));
+    var bh = Math.min(vy + chh - by, Math.ceil(n.asc + n.desc + pad * 2));
     if (bw < 4 || bh < 4) return;
 
     var relX = n.x - bx;
     var relY = n.baseline - by;
+    var gkey = mode + '|' + n.text + '|' + n.font + '|' + n.tracking + '|' + n.slant + '|' +
+      relX.toFixed(2) + ',' + relY.toFixed(2) + '|' + bw + 'x' + bh + '|' + sl.toFixed(2);
 
-    // 1. 字形蒙版
-    var mask = makeCanvas(bw, bh);
-    var mc = mask.getContext('2d');
-    mc.font = n.font;
-    mc.fillStyle = '#fff';
-    mc.textBaseline = 'alphabetic';
-    drawTrackedMode(mc, n.text, relX, relY, n.tracking, n.slant, 'fill');
+    // 1. 字形蒙版（缓存）
+    var mask = cachedGlyph(gkey + '|m', bw, bh, function (mc) {
+      mc.font = n.font;
+      mc.fillStyle = '#fff';
+      mc.textBaseline = 'alphabetic';
+      drawTrackedMode(mc, n.text, relX, relY, n.tracking, n.slant, 'fill');
+    });
 
-    // 2. 取背景（液态玻璃带轻微位移；磨砂带模糊）
+    // 2. 取背景（液态玻璃带轻微位移；磨砂带模糊）—— 这一层必须每帧重建
     var mat = makeCanvas(bw, bh);
     var mt = mat.getContext('2d');
     var dx = mode === 'liquid' ? 0 : 0;
     var dy = mode === 'liquid' ? -1.8 * sl : 0;
-    var sx = Math.max(0, bx + dx);
-    var sy = Math.max(0, by + dy);
-    var sw = Math.min(ctx.canvas.width - sx, bw);
-    var sh = Math.min(ctx.canvas.height - sy, bh);
+    var sx = Math.max(vx, bx + dx);
+    var sy = Math.max(vy, by + dy);
+    var sw = Math.min(vx + cw - sx, bw);
+    var sh = Math.min(vy + chh - sy, bh);
+    if (sw < 1 || sh < 1) return;
     if (mode === 'frost' && typeof mt.filter === 'string') {
       mt.filter = 'blur(' + (3.4 * sl).toFixed(2) + 'px)';
     }
-    mt.drawImage(ctx.canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+    mt.drawImage(ctx.canvas, sx - vx, sy - vy, sw, sh, 0, 0, sw, sh);
     mt.filter = 'none';
 
     // 3. 蒙版裁切
@@ -349,28 +407,28 @@
     ctx.drawImage(mat, bx, by);
     ctx.restore();
 
-    // 5. 内缘暗部（增加厚度感）
-    var inner = makeCanvas(bw, bh);
-    var ic = inner.getContext('2d');
-    ic.font = n.font;
-    ic.fillStyle = 'rgba(0,0,0,0.28)';
-    drawTrackedMode(ic, n.text, relX, relY + 1.1 * sl, n.tracking, n.slant, 'fill');
-    ic.globalCompositeOperation = 'destination-in';
-    ic.drawImage(mask, 0, 0);
+    // 5. 内缘暗部（增加厚度感，缓存）
+    var inner = cachedGlyph(gkey + '|i', bw, bh, function (ic) {
+      ic.font = n.font;
+      ic.fillStyle = 'rgba(0,0,0,0.28)';
+      drawTrackedMode(ic, n.text, relX, relY + 1.1 * sl, n.tracking, n.slant, 'fill');
+      ic.globalCompositeOperation = 'destination-in';
+      ic.drawImage(mask, 0, 0);
+    });
     ctx.save();
     ctx.globalAlpha = mode === 'liquid' ? 0.55 : 0.35;
     ctx.drawImage(inner, bx, by);
     ctx.restore();
 
-    // 6. 高光描边（只保留字形内侧一半）
-    var edge = makeCanvas(bw, bh);
-    var ec = edge.getContext('2d');
-    ec.font = n.font;
-    ec.strokeStyle = mode === 'liquid' ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.6)';
-    drawTrackedMode(ec, n.text, relX, relY, n.tracking, n.slant, 'stroke',
-      (mode === 'liquid' ? 2.6 : 2.2) * sl);
-    ec.globalCompositeOperation = 'destination-in';
-    ec.drawImage(mask, 0, 0);
+    // 6. 高光描边（只保留字形内侧一半，缓存）
+    var edge = cachedGlyph(gkey + '|e', bw, bh, function (ec) {
+      ec.font = n.font;
+      ec.strokeStyle = mode === 'liquid' ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.6)';
+      drawTrackedMode(ec, n.text, relX, relY, n.tracking, n.slant, 'stroke',
+        (mode === 'liquid' ? 2.6 : 2.2) * sl);
+      ec.globalCompositeOperation = 'destination-in';
+      ec.drawImage(mask, 0, 0);
+    });
     ctx.drawImage(edge, bx, by);
   }
 

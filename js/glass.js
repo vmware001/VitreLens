@@ -7,6 +7,9 @@
 
   var VERT = 'attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.0,1.0);}';
 
+  // 注意：这段 GLSL 是 Android 端的唯一真源（android/tools/extract_shaders.py 会导出成
+  // res/raw/*.glsl）。采样语义（uv = 画布坐标 / u_res）不能单独改这里，否则下次构建
+  // Android 就会拿到「按 u_crop 偏移采样」的着色器而 Java 侧仍上传条带纹理 —— 玻璃直接错位。
   var FRAG = `precision highp float;
 uniform sampler2D u_photo;
 uniform sampler2D u_blur;
@@ -155,17 +158,25 @@ void main() {
     'u_disp', 'u_warp', 'u_edge', 'u_segments', 'u_tint', 'u_tintOn', 'u_scale',
     'u_shadow', 'u_white', 'u_opaque', 'u_gloss'];
 
-  function GlassRenderer() {
+  // 预览纹理长边上限。8192 的 50MP 原图常驻显存约 192MiB，预览根本用不到那个精度；
+  // 导出走独立实例（见 app.js 的 getExportRenderer），不受这个上限影响。
+  var PREVIEW_TEX_MAX = 4096;
+
+  function GlassRenderer(maxTexLimit) {
     this.canvas = document.createElement('canvas');
+    // preserveDrawingBuffer:false —— 每帧 render 和随后的 drawImage 在同一个任务里完成，
+    // 浏览器不需要额外保留/拷贝一份 backbuffer（移动端少一类 context lost）。
     var opts = { alpha: false, antialias: false, depth: false, stencil: false,
-      premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' };
+      premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' };
     var gl = this.canvas.getContext('webgl', opts) || this.canvas.getContext('experimental-webgl', opts);
     if (!gl) throw new Error('当前浏览器未启用 WebGL');
     this.gl = gl;
-    this.maxTex = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096, 8192);
+    this.maxTex = Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096, maxTexLimit || PREVIEW_TEX_MAX);
     this.image = null;
     this.blurDirty = true;
     this.darkTone = false;
+    this._imgId = 0;
+    this._winKey = '';
     this._compile();
     this._initQuad();
     this.photoTex = this._texture();
@@ -174,6 +185,8 @@ void main() {
     this.blurCanvas = document.createElement('canvas');
     this.blurCanvas2 = document.createElement('canvas');
     this.lumCanvas = document.createElement('canvas');
+    this.winCanvas = document.createElement('canvas');
+    this.lastClip = null;
   }
 
   GlassRenderer.prototype._shader = function (type, src) {
@@ -218,30 +231,70 @@ void main() {
     return tex;
   };
 
+  /** 记为「当前图」：换图才重算背景明暗（每帧 getImageData 会拖住 GPU 队列） */
   GlassRenderer.prototype.setImage = function (img) {
-    if (this.image === img) return;
+    if (this.image === img) return false;
     this.image = img;
-    this.texSource = null;
-    var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-    var src = img, limit = this.maxTex;
-    if (Math.max(iw, ih) > limit) {
-      var k = limit / Math.max(iw, ih), c = document.createElement('canvas');
-      c.width = Math.max(1, Math.round(iw * k)); c.height = Math.max(1, Math.round(ih * k));
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); src = c;
-    }
-    this.texSource = src;
+    this._imgId++;
+    this._winKey = '';
+    this.blurDirty = true;
+    this._measureTone(img);
+    return true;
+  };
+
+  GlassRenderer.prototype._measureTone = function (img) {
+    var c = this.lumCanvas;
+    if (c.width !== 16 || c.height !== 16) { c.width = 16; c.height = 16; }
+    var ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.drawImage(img, 0, 0, 16, 16);
+    try {
+      var d = ctx.getImageData(0, 0, 16, 16).data, sum = 0;
+      for (var i = 0; i < d.length; i += 4) sum += d[i] * .2126 + d[i+1] * .7152 + d[i+2] * .0722;
+      this.darkTone = sum / (d.length / 4) / 255 < .48;
+    } catch (e) { this.darkTone = false; }
+  };
+
+  GlassRenderer.prototype._uploadPhoto = function (src, w, h) {
     var gl = this.gl;
+    var limit = this.maxTex;
+    var sw = w || src.width, sh = h || src.height;
+    if (Math.max(sw, sh) > limit) {
+      // 只有整幅上传（demo）会超上限；预览窗口本身已经和视口同量级
+      var k = limit / Math.max(sw, sh), c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(sw * k)); c.height = Math.max(1, Math.round(sh * k));
+      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      src = c;
+    }
     gl.bindTexture(gl.TEXTURE_2D, this.photoTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-    this.blurDirty = true;
+  };
+
+  /**
+   * 预览纹理：只上传「可见窗口 + 折射边距」，尺寸和可见像素同量级。
+   * ratioRef 让模糊半径按「整幅宽度」而不是窗口宽度算 —— 否则水印调窄时磨砂会变细腻。
+   */
+  GlassRenderer.prototype._uploadWindow = function (img, cw, ch, tex, ratioRef) {
+    var key = this._imgId + '|' + cw + 'x' + ch + '|' +
+      Math.round(tex.x) + ',' + Math.round(tex.y) + ',' + Math.round(tex.w) + ',' + Math.round(tex.h);
+    if (key === this._winKey) return;
+    this._winKey = key;
+    var c = this.winCanvas;
+    if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; }
+    var ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(img, tex.x, tex.y, tex.w, tex.h, 0, 0, cw, ch);
+    this._uploadPhoto(c, cw, ch);
+    this._buildBlurFrom(c, ratioRef);
   };
 
   GlassRenderer.prototype._blurInto = function (img, canvas, tex, ratio) {
     var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
     var s = Math.min(1, 420 / Math.max(iw, ih));
     var w = Math.max(8, Math.round(iw * s)), h = Math.max(8, Math.round(ih * s));
-    canvas.width = w; canvas.height = h;
+    // 尺寸没变就不要赋值：给 canvas.width 赋同样的值也会清空并重建后备缓冲
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     var ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, w, h);
     if (typeof ctx.filter === 'string') ctx.filter = 'blur(' + Math.max(1, w * ratio).toFixed(2) + 'px)';
@@ -253,33 +306,58 @@ void main() {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
   };
 
-  GlassRenderer.prototype._buildBlurFrom = function (img) {
+  GlassRenderer.prototype._buildBlurFrom = function (img, ratioRef) {
     if (!img) return;
-    this._blurInto(img, this.blurCanvas, this.blurTex, 1 / 63);
-    this._blurInto(img, this.blurCanvas2, this.blurTex2, 1 / 19);
-    this.lumCanvas.width = this.lumCanvas.height = 16;
-    var ctx = this.lumCanvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, 16, 16);
-    try {
-      var d = ctx.getImageData(0, 0, 16, 16).data, sum = 0;
-      for (var i = 0; i < d.length; i += 4) sum += d[i] * .2126 + d[i+1] * .7152 + d[i+2] * .0722;
-      this.darkTone = sum / (d.length / 4) / 255 < .48;
-    } catch (e) { this.darkTone = false; }
+    var rf = ratioRef && isFinite(ratioRef) && ratioRef > 0 ? ratioRef : 1;
+    this._blurInto(img, this.blurCanvas, this.blurTex, rf / 63);
+    this._blurInto(img, this.blurCanvas2, this.blurTex2, rf / 19);
   };
 
   GlassRenderer.prototype._buildBlur = function () {
     if (!this.image || !this.blurDirty) return;
-    this._buildBlurFrom(this.image);
+    this._buildBlurFrom(this.image, 1);
     this.blurDirty = false;
   };
 
   function num(v, d) { return typeof v === 'number' && isFinite(v) ? v : d; }
+  function clampInt(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
-  GlassRenderer.prototype._render = function (w, h, p, o, fullW) {
+  /**
+   * 真正绘制。clip 为 null 时铺满整块画布；否则只画 clip 区域（其余像素保持旧内容）。
+   * 着色器用 gl_FragCoord + u_res 推 uv，所以挪动 viewport 就能只着色一条带 ——
+   * 这正是「特写只渲染水印包围盒」的实现方式，不需要改 GLSL。
+   * growOnly：预览专用。绘制缓冲只增不减（窗口尺寸随「水印宽度」连续变化，
+   * 逐帧重分配 0.3MP 的缓冲是拖动掉帧的主因）；此时窗口放在帧缓冲左下角，
+   * 保证 gl_FragCoord 与 u_res 的相对关系不变。
+   */
+  GlassRenderer.prototype._render = function (w, h, p, o, fullW, clip, growOnly) {
     var gl = this.gl;
     w = Math.max(2, Math.round(w)); h = Math.max(2, Math.round(h));
-    if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
-    gl.viewport(0, 0, w, h); gl.useProgram(this.program);
+    var fbW = w, fbH = h;
+    if (growOnly) {
+      fbW = Math.max(this.canvas.width, w);
+      fbH = Math.max(this.canvas.height, h);
+    }
+    if (this.canvas.width !== fbW || this.canvas.height !== fbH) {
+      this.canvas.width = fbW; this.canvas.height = fbH;
+    }
+
+    var cx = 0, cy = 0, cw = w, ch = h;
+    this.lastClip = null;
+    this.lastFb = null;
+    if (clip) {
+      cx = clampInt(Math.round(clip.x), 0, w);
+      cy = clampInt(Math.round(clip.y), 0, h);
+      cw = clampInt(Math.round(clip.w), 0, w - cx);
+      ch = clampInt(Math.round(clip.h), 0, h - cy);
+      if (cw < 2 || ch < 2) return this.canvas;      // 水印完全在可视区外
+    }
+    this.lastClip = { x: cx, y: cy, w: cw, h: ch };
+    // 画布源矩形要加的 y 偏移：growOnly 时窗口贴在帧缓冲底部
+    this.lastFb = { dy: fbH - h };
+    // 视口按「窗口自己的底部原点」换算（窗口永远贴在帧缓冲底边，故与画布高度无关）
+    gl.viewport(cx, h - (cy + ch), cw, ch);
+    gl.useProgram(this.program);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.photoTex); gl.uniform1i(this.uni.u_photo, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.blurTex); gl.uniform1i(this.uni.u_blur, 1);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.blurTex2); gl.uniform1i(this.uni.u_blur2, 2);
@@ -287,6 +365,8 @@ void main() {
     var u = this.uni, depth = Math.max(2, p.bevel || 2);
     gl.uniform2f(u.u_res, w, h);
     gl.uniform4f(u.u_panel, p.x, p.y, p.w, p.h);
+    // u_crop 恒为整幅：预览改由「窗口纹理 + viewport 裁剪」实现只渲条带（见 _uploadWindow），
+    // 导出的条带纹理同样按 (0,0,1,1) 采样 —— 与 Android 侧上传条带纹理的做法保持一致。
     gl.uniform4f(u.u_crop, 0, 0, 1, 1);
     gl.uniform1f(u.u_radius, p.r);
     gl.uniform1f(u.u_depth, depth);
@@ -312,20 +392,41 @@ void main() {
     return this.canvas;
   };
 
+  /** 整幅渲染（空状态示例用；画布本身就是整幅） */
   GlassRenderer.prototype.render = function (img, w, h, p, o) {
-    this.setImage(img);
-    this._buildBlur();
-    return this._render(w, h, p, o, w);
+    if (this.image !== img) {
+      this.image = img;
+      this._imgId++;
+      this._winKey = '';
+      this._measureTone(img);
+      this._uploadPhoto(img);
+      this._buildBlurFrom(img, 1);
+    }
+    return this._render(w, h, p, o, w, null);
   };
 
+  /**
+   * 预览：只渲染水印条带。
+   * tex = { x, y, w, h } 纹理窗口（原图像素，已含折射/阴影边距）；
+   * cw/ch = 纹理窗口的输出尺寸；panel/clip 都是画布坐标（= 窗口坐标 + 纹理原点偏移）。
+   * 返回画布上有效的矩形（画布坐标，null 表示水印在可视区外）。
+   */
+  GlassRenderer.prototype.renderWindow = function (img, cw, ch, panel, o, fullW, tex, ratioRef, clip) {
+    this.setImage(img);
+    this._uploadWindow(img, cw, ch, tex, ratioRef);
+    this._render(cw, ch, panel, o, fullW, clip, true);
+    var lc = this.lastClip;
+    if (!lc) return null;
+    // 源矩形按画布自上而下的坐标给；wx/wy 是它在窗口里的位置（调用方再减纹理原点偏移）
+    return { sx: lc.x, sy: this.lastFb.dy + lc.y, w: lc.w, h: lc.h, wx: lc.x, wy: lc.y };
+  };
+
+  /** 导出条带：原图像素直接当纹理上传（和预览共用渲染代码，但不碰预览的纹理状态） */
   GlassRenderer.prototype.renderCropped = function (src, w, h, p, o, fullW) {
-    var gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.photoTex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-    this.image = null;
-    this._buildBlurFrom(src);
-    return this._render(w, h, p, o, fullW);
+    this._uploadPhoto(src, w, h);
+    this._buildBlurFrom(src, 1);
+    this.blurDirty = false;
+    return this._render(w, h, p, o, fullW, null);
   };
 
   global.LG = global.LG || {};
