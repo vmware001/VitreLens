@@ -132,16 +132,40 @@ class Meta {
             }
         }
 
-        // 找 EOI
+        // 找 EOI：熵编码数据有几十 MB，原来一字节一次 in.read()（20MP 照片约
+        // 2000 万次调用）是导入最贵的一段。这里改成分块读取、块内数组比对，
+        // 只维护一个跨块边界的 prev，语义与逐字节扫描完全一致。
+        // 分块会多读进 EOI 之后的一小段，用 PushbackInputStream 把多读的字节退回，
+        // 后面的 trailer / 增益图解析才能从正确位置继续读。
         int prev = -1;
-        while (true) {
-            int c = in.read();
-            if (c < 0) break;
-            pos++;
-            if (prev == 0xFF && c == 0xD9) break;
-            prev = c;
+        byte[] scan = new byte[1 << 16];
+        java.io.PushbackInputStream pin = new java.io.PushbackInputStream(in, scan.length);
+        long blockStart = pos;
+        int scanN;
+        boolean foundEoi = false;
+        while (!foundEoi && (scanN = pin.read(scan, 0, scan.length)) > 0) {
+            for (int i = 0; i < scanN; i++) {
+                int c = scan[i] & 0xFF;
+                if (prev == 0xFF && c == 0xD9) {
+                    m.eoiEnd = blockStart + i + 1;
+                    pos = m.eoiEnd;
+                    int rest = scanN - (i + 1);
+                    if (rest > 0) pin.unread(scan, i + 1, rest);
+                    foundEoi = true;
+                    break;
+                }
+                prev = c;
+            }
+            if (!foundEoi) {
+                blockStart += scanN;
+                pos = blockStart;
+            }
         }
-        m.eoiEnd = pos;
+        if (!foundEoi) {
+            // 没有 EOI（损坏或截断）：按已消费字节数收尾，和旧逻辑一致
+            m.eoiEnd = blockStart;
+            pos = blockStart;
+        }
 
         m.trailerStart = m.eoiEnd;
         if (fileLen > 0) m.trailerLength = Math.max(0, fileLen - m.eoiEnd);
@@ -151,7 +175,8 @@ class Meta {
         byte[] b4 = new byte[4];
         int n4 = -1;
         try {
-            n4 = in.read(b4, 0, 4);
+            // 从 pin 读：分块找 EOI 时多读的字节已经退回到 pin 里
+            n4 = pin.read(b4, 0, 4);
         } catch (Exception ignored) {
         }
 
@@ -163,7 +188,7 @@ class Meta {
             if (n4 == 4) {
                 byte[] buf = new byte[1 << 16];
                 int k;
-                while ((k = in.read(buf)) > 0) n += k;
+                while ((k = pin.read(buf)) > 0) n += k;
             }
             m.trailerLength = n;
             m.trailerStart = m.eoiEnd;

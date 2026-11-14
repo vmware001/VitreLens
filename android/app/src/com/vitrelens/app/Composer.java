@@ -21,6 +21,10 @@ class Composer {
     private Bitmap overlay;
     private int overlayX, overlayY, overlayKey = -1;
 
+    /** 复用条带裁剪缓冲：视频每帧都会裁一条带，别每帧 allocate 十几 MB */
+    private Bitmap cropBuf;
+    private Canvas cropCanvas;
+
     Composer(GlassRenderer glass) {
         this.glass = glass;
     }
@@ -108,29 +112,28 @@ class Composer {
                 int ch = Math.min(H - cy, sh + 2 * m);
                 if (innerW <= 0 || sh <= 0 || cw <= 2 || ch <= 2) continue;
 
-                Bitmap crop = Bitmap.createBitmap(base, cx, cy, cw, ch);
+                Bitmap crop = ensureCropBuf(cw, ch);
+                if (crop == null) continue;
+                cropCanvas.drawBitmap(base, new Rect(cx, cy, cx + cw, cy + ch),
+                        new Rect(0, 0, cw, ch), null);
                 Bitmap g;
-                try {
-                    WatermarkPainter.Panel p = new WatermarkPainter.Panel();
-                    p.x = panel.x - cx;
-                    p.y = panel.y - cy;
-                    p.w = panel.w;
-                    p.h = panel.h;
-                    p.r = panel.r;
-                    p.bevel = panel.bevel;
-                    p.edgeW = panel.edgeW;
-                    // 照片仍按原规则使用高斯；视频始终使用 GPU 友好的快路径。
-                    boolean hq = !videoFrame && W >= 1600;
-                    g = glass.render(crop, cx, cy, W, H, p, st, hq);
-                } finally {
-                    crop.recycle();
-                }
+                WatermarkPainter.Panel p = new WatermarkPainter.Panel();
+                p.x = panel.x - cx;
+                p.y = panel.y - cy;
+                p.w = panel.w;
+                p.h = panel.h;
+                p.r = panel.r;
+                p.bevel = panel.bevel;
+                p.edgeW = panel.edgeW;
+                // 照片仍按原规则使用高斯；视频始终使用 GPU 友好的快路径。
+                boolean hq = !videoFrame && W >= 1600;
+                // renderShared 返回内部复用位图：画完即可，不能 recycle
+                g = glass.renderShared(crop, cx, cy, W, H, p, st, hq);
                 int srcX = innerX - cx;
                 int srcY = sy - cy;
                 c.drawBitmap(g,
                         new Rect(srcX, srcY, srcX + innerW, srcY + sh),
                         new Rect(innerX, sy, innerX + innerW, sy + sh), null);
-                g.recycle();
             }
         }
 
@@ -163,5 +166,34 @@ class Composer {
             overlayKey = key;
         }
         c.drawBitmap(overlay, overlayX, overlayY, null);
+    }
+
+    /** 取一张正好 cw×ch 的复用裁剪位图（尺寸变化才重新分配；条带尺寸逐帧稳定）。 */
+    private Bitmap ensureCropBuf(int w, int h) {
+        if (cropBuf == null || cropBuf.isRecycled()
+                || cropBuf.getWidth() != w || cropBuf.getHeight() != h) {
+            if (cropBuf != null) cropBuf.recycle();
+            try {
+                cropBuf = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            } catch (Throwable t) {
+                cropBuf = null;
+                return null;
+            }
+            cropCanvas = new Canvas(cropBuf);
+        }
+        return cropBuf;
+    }
+
+    /** Activity 销毁时释放复用的缓冲与覆盖层 */
+    void release() {
+        if (cropBuf != null) {
+            cropBuf.recycle();
+            cropBuf = null;
+            cropCanvas = null;
+        }
+        if (overlay != null) {
+            overlay.recycle();
+            overlay = null;
+        }
     }
 }

@@ -49,8 +49,18 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     private static final int REQ_PICK = 1001;
     private static final int REQ_LOGO = 1002;
     private static final int REQ_VIDEO = 1003;
-    // 预览从 1400 提高到 2000：全图仍按 View 缩放，特写与高分辨率 Logo 不再明显发虚
-    private static final int PREVIEW_MAX = 2000;
+    // 预览上限不再写死 2000：按预览 View 的实际像素取 1.25×，夹在 1200~2000。
+    // 2000 在 1080p 手机上相当于 2× 过采样，逐帧合成/拖动要白付一倍以上像素。
+    private static final int PREVIEW_MIN = 1200;
+    private static final int PREVIEW_CAP = 2000;
+    /** UI 玻璃在视频帧预览里的重算间隔（ms）：逐帧重算两块面板的 GL 会把拖动拖垮 */
+    private static final long UI_GLASS_INTERVAL_MS = 120;
+    private long lastUiGlassMs;
+    /** makeBackdrop 的 centerCrop 中间结果与像素缓冲复用 */
+    private Bitmap backdropScaled;
+    private int[] backdropPx;
+    private final Paint backdropPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Rect backdropRect = new Rect();
 
     private ImageView preview, backdrop;
     /** 选中的照片列表（支持多选）；只有一个时缩略图条隐藏 */
@@ -325,10 +335,17 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         recycleQuietly(previewBase);
         recycleQuietly(videoRawFrame);
         recycleQuietly(photo);
+        recycleQuietly(backdropBmp);
+        recycleQuietly(backdropScaled);
+        backdropBmp = null;
+        backdropScaled = null;
+        backdropPx = null;
         lastComposed = null;
         cropBuf = null;
         previewBase = null;
         photo = null;
+        VideoFrameDecoder.close();
+        if (composer != null) composer.release();
     }
 
     private static void recycleQuietly(Bitmap b) {
@@ -1075,6 +1092,20 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
+    /**
+     * 预览解码/工作位图的最长边上限。
+     * 按预览 View 的实际像素取 1.25×（留出 zoom/特写余量），夹在 1200~2000 之间；
+     * View 还没测量时退回 1400。1080p 手机上从固定 2000 降到约 1200-1400，
+     * 预览合成、视频帧 YUV 转换和每帧拷贝的像素量直接省掉 40% 以上。
+     */
+    private int previewMax() {
+        int w = preview != null ? preview.getWidth() : 0;
+        int h = preview != null ? preview.getHeight() : 0;
+        int base = Math.max(w, h);
+        if (base <= 0) return 1400;
+        return Math.max(PREVIEW_MIN, Math.min(PREVIEW_CAP, Math.round(base * 1.25f)));
+    }
+
     /* ── 普通视频：选择精确帧预览，整段导出 ── */
 
     private void clearVideoMode() {
@@ -1083,10 +1114,10 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         videoClip = null;
         videoRawIndex = -1;
         videoFrameIndex = 0;
-        final Bitmap oldFrame = videoRawFrame;
         videoRawFrame = null;
-        // 旧帧可能正被 GL 队列合成，回收也排到同一条队列，避免跨线程 use-after-recycle
-        if (oldFrame != null) glQueue.execute(() -> recycleQuietly(oldFrame));
+        // 解码器的复用缓冲由 VideoFrameDecoder.close() 统一回收（排在 GL 队列上，
+        // 避免和正在进行的合成抢同一张位图）。
+        glQueue.execute(VideoFrameDecoder::close);
         if (videoFrameBar != null) videoFrameBar.setVisibility(View.GONE);
         ui.removeCallbacks(videoFrameTask);
         ui.removeCallbacks(videoStyleTask);
@@ -1181,11 +1212,11 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
             Bitmap out = null, bg = null;
             try {
                 if (decodeFrame || videoRawFrame == null || videoRawIndex != index) {
-                    Bitmap fresh = clip.frameAt(clip.timeUsForFrame(index), PREVIEW_MAX);
-                    Bitmap old = videoRawFrame;
+                    Bitmap fresh = clip.frameAt(clip.timeUsForFrame(index), previewMax());
+                    // VideoFrameDecoder 内部只保留两张复用位图，旧帧可能正是它的另一只槽，
+                    // 这里不能 recycle（否则下一次解码又要重新分配）。
                     videoRawFrame = fresh;
                     videoRawIndex = index;
-                    if (old != null && old != fresh) old.recycle();
                 }
                 Bitmap work = videoRawFrame.copy(Bitmap.Config.ARGB_8888, true);
                 if (work == null) throw new RuntimeException("无法创建预览帧");
@@ -1211,9 +1242,18 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 if (detailMode) updateCloseUp();
                 else preview.setImageBitmap(result);
                 if (previous != null && previous != result) recycleQuietly(previous);
+                Bitmap oldBackdrop = backdropBmp;
                 backdropBmp = background;
                 backdrop.setImageBitmap(background);
-                applyUiGlass();
+                // 旧背景图不再被任何 View 引用，不回收的话每拖一格就漏一张整屏位图
+                if (oldBackdrop != null && oldBackdrop != background) recycleQuietly(oldBackdrop);
+                // UI 玻璃重算要重新跑两块面板的 GL + 圆角；视频帧变化时 120ms 更新一次，
+                // 观感上仍然跟着背景动，但不会把拖动帧率压到个位数。
+                long now = android.os.SystemClock.uptimeMillis();
+                if (now - lastUiGlassMs >= UI_GLASS_INTERVAL_MS) {
+                    lastUiGlassMs = now;
+                    applyUiGlass();
+                }
             });
         });
     }
@@ -1250,7 +1290,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 dirty = false;
 
                 if (previewBase != null) previewBase.recycle();
-                double pk = Math.min(1.0, (double) PREVIEW_MAX / Math.max(photoW, photoH));
+                double pk = Math.min(1.0, (double) previewMax() / Math.max(photoW, photoH));
                 previewBase = Bitmap.createScaledBitmap(bmp,
                         Math.max(1, (int) (photoW * pk)),
                         Math.max(1, (int) (photoH * pk)), true);
@@ -1304,14 +1344,25 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         float scale = Math.max(vw / (float) src.getWidth(), vh / (float) src.getHeight());
         int sw = Math.max(vw, Math.round(src.getWidth() * scale));
         int sh = Math.max(vh, Math.round(src.getHeight() * scale));
-        Bitmap scaled = Bitmap.createScaledBitmap(src, sw, sh, true);
+
+        // centerCrop 的中间结果比屏幕大不少（横屏视频在竖屏上可达 40MB）。
+        // 视频逐帧预览时每格都新建一张，GC 会持续抖动；这里按尺寸复用同一张缓冲。
+        if (backdropScaled == null || backdropScaled.isRecycled()
+                || backdropScaled.getWidth() != sw || backdropScaled.getHeight() != sh) {
+            recycleQuietly(backdropScaled);
+            backdropScaled = Bitmap.createScaledBitmap(src, sw, sh, true);
+        } else {
+            Canvas sc = new Canvas(backdropScaled);
+            backdropRect.set(0, 0, sw, sh);
+            sc.drawBitmap(src, null, backdropRect, backdropPaint);
+        }
 
         Bitmap out = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(out);
-        c.drawBitmap(scaled, (vw - sw) / 2f, (vh - sh) / 2f, null);
-        if (scaled != out) scaled.recycle();
+        c.drawBitmap(backdropScaled, (vw - sw) / 2f, (vh - sh) / 2f, null);
 
-        int[] px = new int[vw * vh];
+        if (backdropPx == null || backdropPx.length < vw * vh) backdropPx = new int[vw * vh];
+        int[] px = backdropPx;
         out.getPixels(px, 0, vw, 0, 0, vw, vh);
         Blur.boxBlur(px, vw, vh, Math.max(2, Math.round(vw / 260f)));
         out.setPixels(px, 0, vw, 0, 0, vw, vh);
@@ -1323,12 +1374,25 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         int orient = meta == null ? 1 : meta.orientation;
         Bitmap bmp = null;
         boolean rotatedByDecoder = true;
+        final long cap = maxPixels();
 
         try {
             ImageDecoder.Source src = ImageDecoder.createSource(getContentResolver(), uri);
             bmp = ImageDecoder.decodeBitmap(src, (decoder, info, s) -> {
                 decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
                 decoder.setMutableRequired(true);
+                // 直接按内存上限解码：200MP 的图先解成 8 亿字节再缩小，必然先 OOM/长 GC。
+                // 用 setTargetSize 让解码器在解码阶段就降采样（旋转后的尺寸由 info.getSize() 给出）。
+                android.util.Size size = info.getSize();
+                if (size != null && size.getWidth() > 0 && size.getHeight() > 0) {
+                    double px = (double) size.getWidth() * size.getHeight();
+                    if (px > cap) {
+                        double k = Math.sqrt(cap / px);
+                        decoder.setTargetSize(
+                                Math.max(1, (int) Math.round(size.getWidth() * k)),
+                                Math.max(1, (int) Math.round(size.getHeight() * k)));
+                    }
+                }
             });
             if (orient >= 5 && orient <= 8 && rawW > 0 && bmp.getWidth() == rawW && bmp.getHeight() == rawH) {
                 rotatedByDecoder = false;
@@ -1336,6 +1400,12 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         } catch (Throwable t) {
             BitmapFactory.Options o = new BitmapFactory.Options();
             o.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            // 兜底路径没有 setTargetSize，用 inSampleSize 先粗降一层，避免同样的超大分配
+            long rawPx = (long) Math.max(1, rawW) * Math.max(1, rawH);
+            if (rawPx > cap) {
+                int sample = (int) Math.floor(Math.sqrt(rawPx / (double) cap));
+                o.inSampleSize = Math.max(1, sample);
+            }
             InputStream in1 = getContentResolver().openInputStream(uri);
             bmp = BitmapFactory.decodeStream(in1, null, o);
             if (in1 != null) in1.close();
@@ -1362,7 +1432,6 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
 
         int w = bmp.getWidth(), h = bmp.getHeight();
         double px = (double) w * h;
-        long cap = maxPixels();
         if (px > cap) {
             double k = Math.sqrt(cap / px);
             Bitmap s = Bitmap.createScaledBitmap(bmp, Math.max(1, (int) (w * k)), Math.max(1, (int) (h * k)), true);
@@ -1520,32 +1589,44 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
             if (out == null) return src;
             float r = Math.max(0f, Math.min(radius, Math.min(w, h) / 2f));
             int ri = (int) Math.ceil(r);
-            int[] row = new int[Math.max(1, ri)];
-            for (int y = 0; y < ri; y++) {
-                for (int x = 0; x < ri; x++) {
-                    // 以左上角圆心 (r, r) 为基准算覆盖率
-                    float dx = Math.max(0f, r - x - 0.5f);
-                    float dy = Math.max(0f, r - y - 0.5f);
-                    float d = (float) Math.hypot(dx, dy);
-                    float cover = Math.max(0f, Math.min(1f, r - d + 0.5f));
-                    if (cover >= 1f) continue;
-                    setCornerAlpha(out, w, h, x, y, cover);
-                    setCornerAlpha(out, w, h, w - 1 - x, y, cover);
-                    setCornerAlpha(out, w, h, x, h - 1 - y, cover);
-                    setCornerAlpha(out, w, h, w - 1 - x, h - 1 - y, cover);
-                }
-            }
+            if (ri <= 0 || w < ri || h < ri) return out;
+            // 四个角各一次 getPixels/setPixels：原来是逐像素 getPixel/setPixel，
+            // 22dp 圆角在 3× 屏上每个角要 4000+ 次 JNI 往返，两块面板就是 3.5 万次。
+            int[] px = new int[ri * ri];
+            applyCornerAlpha(out, w, h, ri, r, 0, px);   // 左上
+            applyCornerAlpha(out, w, h, ri, r, 1, px);   // 右上
+            applyCornerAlpha(out, w, h, ri, r, 2, px);   // 左下
+            applyCornerAlpha(out, w, h, ri, r, 3, px);   // 右下
         } catch (Throwable t) {
             return src;
         }
         return out;
     }
 
-    private void setCornerAlpha(Bitmap b, int w, int h, int x, int y, float cover) {
-        if (x < 0 || y < 0 || x >= w || y >= h) return;
-        int c = b.getPixel(x, y);
-        int a = Math.round(((c >>> 24) & 0xFF) * cover);
-        b.setPixel(x, y, (a << 24) | (c & 0x00FFFFFF));
+    /** 批量处理一个角的 alpha；corner: 0 左上 / 1 右上 / 2 左下 / 3 右下 */
+    private void applyCornerAlpha(Bitmap b, int w, int h, int ri, float r, int corner, int[] px) {
+        int ox = (corner == 1 || corner == 3) ? w - ri : 0;
+        int oy = (corner >= 2) ? h - ri : 0;
+        if (ox < 0 || oy < 0 || ri <= 0) return;
+        b.getPixels(px, 0, ri, ox, oy, ri, ri);
+        boolean mirrorX = corner == 1 || corner == 3;
+        boolean mirrorY = corner >= 2;
+        for (int y = 0; y < ri; y++) {
+            int ly = mirrorY ? ri - 1 - y : y;
+            float dy = Math.max(0f, r - ly - 0.5f);
+            for (int x = 0; x < ri; x++) {
+                int lx = mirrorX ? ri - 1 - x : x;
+                float dx = Math.max(0f, r - lx - 0.5f);
+                float d = (float) Math.hypot(dx, dy);
+                float cover = Math.max(0f, Math.min(1f, r - d + 0.5f));
+                if (cover >= 1f) continue;
+                int idx = y * ri + x;
+                int c = px[idx];
+                int a = Math.round(((c >>> 24) & 0xFF) * cover);
+                px[idx] = (a << 24) | (c & 0x00FFFFFF);
+            }
+        }
+        b.setPixels(px, 0, ri, ox, oy, ri, ri);
     }
 
     private void applyUiGlass() {

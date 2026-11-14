@@ -1,6 +1,9 @@
 package com.vitrelens.app;
 
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
@@ -32,6 +35,14 @@ class GlassRenderer {
     private int uTint, uTintOn, uGloss, uShadow, uScale;
     private int aPos;
     private int fbo, texPhoto, texBlur, texBlur2;
+    // 输出纹理常驻：之前每帧 glGenTextures + glTexImage2D 再删除，视频逐帧合成时
+    // 每次都在重新申请一整条带（4K 下十几 MB）的显存，是视频转码的主要垃圾来源之一。
+    private int texOut;
+    private int outW = -1, outH = -1;
+    /** photo/blur/blur2 三个输入纹理的已分配尺寸；尺寸不变时用 texSubImage2D 原地更新 */
+    private final int[] texSizes = {-1, -1, -1, -1, -1, -1};
+    /** 共享输出位图：Composer 逐帧取用，画完立即消费，不需要调用方回收 */
+    private Bitmap sharedOut;
     private int maxTex = 4096;
     private String rendererName = "unknown";
     private FloatBuffer quad;
@@ -39,6 +50,11 @@ class GlassRenderer {
     private Bitmap blurBitmap, blurBitmap2;
     private ByteBuffer readBack;
     private byte[] flipPixels;
+    /** 高斯路径的像素缓冲，按尺寸复用 */
+    private int[] blurPixels;
+    private final Paint scalePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Rect scaleRect = new Rect();
+    private Canvas scaleCanvas;
 
     GlassRenderer(MainActivity act) throws Exception {
         String frag = readRaw(act, R.raw.glass_frag_pbr);
@@ -109,11 +125,12 @@ class GlassRenderer {
         int[] ids = new int[1];
         GLES20.glGenFramebuffers(1, ids, 0);
         fbo = ids[0];
-        int[] tex = new int[3];
-        GLES20.glGenTextures(3, tex, 0);
+        int[] tex = new int[4];
+        GLES20.glGenTextures(4, tex, 0);
         texPhoto = tex[0];
         texBlur = tex[1];
         texBlur2 = tex[2];
+        texOut = tex[3];
     }
 
     /** 渲染在后台线程执行，初始化线程用完就把上下文交还出来 */
@@ -191,13 +208,22 @@ class GlassRenderer {
         uCrop = GLES20.glGetUniformLocation(program, "u_crop");
     }
 
-    private void upload(int tex, Bitmap bmp) {
+    /** 上传位图到指定槽位；尺寸不变时原地更新，避免每帧重新分配纹理显存。 */
+    private void upload(int slot, int tex, Bitmap bmp) {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-        android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+        int w = bmp.getWidth(), h = bmp.getHeight();
+        int wi = slot * 2, hi = wi + 1;
+        if (texSizes[wi] == w && texSizes[hi] == h) {
+            android.opengl.GLUtils.texSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, bmp);
+        } else {
+            android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+            texSizes[wi] = w;
+            texSizes[hi] = h;
+        }
     }
 
     /** 两级模糊近似 three.js 的 mip 采样（roughness 决定取哪一级） */
@@ -223,9 +249,11 @@ class GlassRenderer {
             if (dst != null) dst.recycle();
             dst = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         }
-        android.graphics.Canvas c = new android.graphics.Canvas(dst);
-        android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
-        c.drawBitmap(src, null, new android.graphics.Rect(0, 0, w, h), p);
+        // 预览/视频每帧都会走这里，Canvas/Paint/Rect 复用，别每帧 new 一遍
+        if (scaleCanvas == null) scaleCanvas = new Canvas();
+        scaleCanvas.setBitmap(dst);
+        scaleRect.set(0, 0, w, h);
+        scaleCanvas.drawBitmap(src, null, scaleRect, scalePaint);
         return dst;
     }
 
@@ -262,7 +290,8 @@ class GlassRenderer {
         if (work == null) return dst;
 
         int w = work.getWidth(), h = work.getHeight();
-        int[] px = new int[w * h];
+        if (blurPixels == null || blurPixels.length < w * h) blurPixels = new int[w * h];
+        int[] px = blurPixels;
         work.getPixels(px, 0, w, 0, 0, w, h);
         // 3 次盒式：宽度 w0 = 2r+1 时 sigma ≈ w0/2
         int r = Math.max(1, Math.round(sigma - 0.5f));
@@ -290,29 +319,47 @@ class GlassRenderer {
 
     Bitmap render(Bitmap crop, int cropX, int cropY, int fullW, int fullH,
                   WatermarkPainter.Panel p, WatermarkPainter.Style st, boolean hq) {
+        return renderInternal(crop, cropX, cropY, fullW, fullH, p, st, hq, false);
+    }
+
+    /**
+     * 逐帧合成专用：返回内部复用的位图，调用方画完即可，**不要 recycle**。
+     * 视频每帧都要渲染整条带，4K 下每帧省一张 ~33MB 的位图分配。
+     */
+    Bitmap renderShared(Bitmap crop, int cropX, int cropY, int fullW, int fullH,
+                        WatermarkPainter.Panel p, WatermarkPainter.Style st, boolean hq) {
+        return renderInternal(crop, cropX, cropY, fullW, fullH, p, st, hq, true);
+    }
+
+    private Bitmap renderInternal(Bitmap crop, int cropX, int cropY, int fullW, int fullH,
+                                  WatermarkPainter.Panel p, WatermarkPainter.Style st,
+                                  boolean hq, boolean shared) {
         int w = crop.getWidth();
         int h = crop.getHeight();
         if (!bind()) throw new RuntimeException("EGL makeCurrent 失败");
 
-        int[] tex = new int[1];
-        GLES20.glGenTextures(1, tex, 0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0]);
-        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
-                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        // 输出纹理常驻：只在条带尺寸变化时重新分配显存
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texOut);
+        if (outW != w || outH != h) {
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
+                    GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+            outW = w;
+            outH = h;
+        }
 
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo);
         GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-                GLES20.GL_TEXTURE_2D, tex[0], 0);
+                GLES20.GL_TEXTURE_2D, texOut, 0);
         GLES20.glViewport(0, 0, w, h);
 
-        upload(texPhoto, crop);
+        upload(0, texPhoto, crop);
         makeBlur(crop, hq);
-        upload(texBlur, blurBitmap);
-        upload(texBlur2, blurBitmap2);
+        upload(1, texBlur, blurBitmap);
+        upload(2, texBlur2, blurBitmap2);
 
         GLES20.glUseProgram(program);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
@@ -384,20 +431,35 @@ class GlassRenderer {
         readBack.position(0);
 
         // Android 的 ARGB_8888 在内存里就是 R,G,B,A 字节序，与 GL_RGBA 一致，
-        // 所以只需要上下翻转，不用再逐像素换通道；回读与翻转数组按尺寸复用。
-        byte[] px = readBack.array();
+        // 所以只需要上下翻转，不用再逐像素换通道。
+        //
+        // 注意：readBack 必须是 direct buffer（GLES20.glReadPixels 不接受堆缓冲），
+        // 而 direct buffer 没有 array()（调用必抛 UnsupportedOperationException）。
+        // 旧代码在这里 readBack.array()，玻璃渲染实际是坏的；这里改成逐行 get() 读回，
+        // 并在同一次循环里完成上下翻转 —— 比「先拷贝整块、再翻转」少一次全图拷贝。
         if (flipPixels == null || flipPixels.length < byteCount) flipPixels = new byte[byteCount];
         byte[] out = flipPixels;
         int row = w * 4;
         for (int y = 0; y < h; y++) {
-            System.arraycopy(px, (h - 1 - y) * row, out, y * row, row);
+            readBack.position((h - 1 - y) * row);
+            readBack.get(out, y * row, row);
         }
-        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Bitmap bmp;
+        if (shared) {
+            // 逐帧合成复用同一张输出位图：调用方画完即可，下一个处理线程会覆盖它
+            if (sharedOut == null || sharedOut.isRecycled()
+                    || sharedOut.getWidth() != w || sharedOut.getHeight() != h) {
+                if (sharedOut != null) sharedOut.recycle();
+                sharedOut = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            }
+            bmp = sharedOut;
+        } else {
+            bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        }
         bmp.copyPixelsFromBuffer(ByteBuffer.wrap(out));
         GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
                 GLES20.GL_TEXTURE_2D, 0, 0);
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
-        GLES20.glDeleteTextures(1, tex, 0);
         return bmp;
     }
 
@@ -423,9 +485,11 @@ class GlassRenderer {
                 GLES20.glDeleteFramebuffers(1, a, 0);
                 fbo = 0;
             }
-            int[] t = {texPhoto, texBlur, texBlur2};
-            GLES20.glDeleteTextures(3, t, 0);
-            texPhoto = texBlur = texBlur2 = 0;
+            int[] t = {texPhoto, texBlur, texBlur2, texOut};
+            GLES20.glDeleteTextures(4, t, 0);
+            texPhoto = texBlur = texBlur2 = texOut = 0;
+            outW = outH = -1;
+            for (int i = 0; i < texSizes.length; i++) texSizes[i] = -1;
         } catch (Throwable ignored) {
         }
         try {
@@ -446,5 +510,13 @@ class GlassRenderer {
             blurBitmap2.recycle();
             blurBitmap2 = null;
         }
+        if (sharedOut != null) {
+            sharedOut.recycle();
+            sharedOut = null;
+        }
+        blurPixels = null;
+        flipPixels = null;
+        readBack = null;
+        scaleCanvas = null;
     }
 }

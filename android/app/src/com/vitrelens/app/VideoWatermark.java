@@ -60,6 +60,8 @@ class VideoWatermark {
     private static class SampleSpool {
         final File file;
         final java.io.RandomAccessFile raf;
+        /** 读写共用的中转缓冲：原来每个样本都 new 一次 256KB */
+        private final byte[] chunk = new byte[256 * 1024];
 
         SampleSpool(File file) throws Exception {
             this.file = file;
@@ -71,7 +73,6 @@ class VideoWatermark {
             s.spool = this;
             s.offset = raf.getFilePointer();
             s.size = src.remaining();
-            byte[] chunk = new byte[256 * 1024];
             while (src.hasRemaining()) {
                 int n = Math.min(chunk.length, src.remaining());
                 src.get(chunk, 0, n);
@@ -81,7 +82,6 @@ class VideoWatermark {
 
         void read(Sample s, ByteBuffer dst) throws Exception {
             raf.seek(s.offset);
-            byte[] chunk = new byte[256 * 1024];
             int left = s.size;
             while (left > 0) {
                 int n = Math.min(chunk.length, left);
@@ -487,6 +487,7 @@ class VideoWatermark {
 
         MediaCodec.BufferInfo wbi = new MediaCodec.BufferInfo();
         int vWritten = 0, aWritten = 0;
+        ByteBuffer sampleBuf = null;   // 复用直接缓冲：原来每个样本 new 一块，几十 MB 的垃圾
         try {
             for (Sample s : all) {
                 int track = s.video ? vTrack : aTrack;
@@ -498,7 +499,11 @@ class VideoWatermark {
                 try {
                     // 必须用直接缓冲：MediaMuxer 底层的 GetDirectBufferAddress 对堆缓冲
                     // 会失败，而且**不一定抛异常**，表现就是样本被静默丢掉、成片 0 帧。
-                    ByteBuffer bb = ByteBuffer.allocateDirect(sampleSize);
+                    if (sampleBuf == null || sampleBuf.capacity() < sampleSize) {
+                        sampleBuf = ByteBuffer.allocateDirect(sampleSize);
+                    }
+                    ByteBuffer bb = sampleBuf;
+                    bb.clear();
                     if (s.spool != null) s.spool.read(s, bb);
                     else { bb.put(s.data); bb.flip(); }
                     mux.writeSampleData(track, bb, wbi);
@@ -542,7 +547,6 @@ class VideoWatermark {
     /** 两个帧槽循环复用：生产线程做解码/YUV，GL 线程做合成/编码。 */
     private static class FrameSlot {
         Bitmap raw, work;
-        int[] pixels;
         Canvas canvas;
         Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
         long ptsUs;
@@ -552,7 +556,6 @@ class VideoWatermark {
 
         FrameSlot(int cw, int ch, int outW, int outH, boolean resize) {
             raw = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888);
-            pixels = new int[cw * ch];
             work = resize ? Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888) : raw;
             canvas = resize ? new Canvas(work) : null;
         }
@@ -578,7 +581,7 @@ class VideoWatermark {
                 new java.util.concurrent.ArrayBlockingQueue<FrameSlot>(2);
         final java.util.concurrent.ArrayBlockingQueue<FrameSlot> ready =
                 new java.util.concurrent.ArrayBlockingQueue<FrameSlot>(2);
-        long bytesPerSlot = 8L * convertW * convertH + 4L * outW * outH;
+        long bytesPerSlot = 4L * convertW * convertH + (resizeFrame ? 4L * outW * outH : 0L);
         final boolean dual = bytesPerSlot * 2 <= 384L * 1024 * 1024;
         final FrameSlot slotA = new FrameSlot(convertW, convertH, outW, outH, resizeFrame);
         final FrameSlot slotB = dual
@@ -592,6 +595,9 @@ class VideoWatermark {
                 new java.util.concurrent.atomic.AtomicReference<Throwable>();
         final FrameStats stats = new FrameStats();
         stats.encFmt = initialFmt;
+        // YUV 转换的 int[] 划转缓冲只被生产线程顺序使用，两个帧槽共用一份即可：
+        // 之前每个槽各存一份（4K 下每份 33MB），双缓冲就白白多占 33MB。
+        final int[] convertScratch = new int[Math.max(1, convertW * convertH)];
 
         Thread producer = new Thread(() -> {
             long yuvTotal = 0;
@@ -645,11 +651,19 @@ class VideoWatermark {
                                 slot = free.take();
                                 long t0 = System.nanoTime();
                                 try {
-                                    if (convertW == srcW && convertH == srcH) {
-                                        converted = yuv.toBitmap(img, slot.raw, slot.pixels, srcW, srcH);
+                                    int iw = img.getWidth(), ih = img.getHeight();
+                                    if (iw == srcW && ih == srcH) {
+                                        if (convertW == srcW && convertH == srcH) {
+                                            converted = yuv.toBitmap(img, slot.raw, convertScratch, srcW, srcH);
+                                        } else {
+                                            converted = yuv.toBitmapScaled(img, slot.raw, convertScratch,
+                                                    srcW, srcH, convertW, convertH);
+                                        }
                                     } else {
-                                        converted = yuv.toBitmapScaled(img, slot.raw, slot.pixels,
-                                                srcW, srcH, convertW, convertH);
+                                        // 少数编码流会输出裁剪后的画面尺寸，按实际尺寸直接缩放到槽尺寸，
+                                        // 否则 toBitmap 会返回 false，整段视频变成 0 帧。
+                                        converted = yuv.toBitmapScaled(img, slot.raw, convertScratch,
+                                                iw, ih, convertW, convertH);
                                     }
                                 } finally {
                                     yuvTotal += System.nanoTime() - t0;
