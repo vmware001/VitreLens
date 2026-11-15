@@ -433,10 +433,10 @@ class GlassRenderer {
         // Android 的 ARGB_8888 在内存里就是 R,G,B,A 字节序，与 GL_RGBA 一致，
         // 所以只需要上下翻转，不用再逐像素换通道。
         //
-        // 注意：readBack 必须是 direct buffer（GLES20.glReadPixels 不接受堆缓冲），
-        // 而 direct buffer 没有 array()（调用必抛 UnsupportedOperationException）。
-        // 旧代码在这里 readBack.array()，玻璃渲染实际是坏的；这里改成逐行 get() 读回，
-        // 并在同一次循环里完成上下翻转 —— 比「先拷贝整块、再翻转」少一次全图拷贝。
+        // 说明：readBack 必须是 direct buffer（GLES20.glReadPixels 不接受堆缓冲）。
+        // Android 3.0 起 libcore 的 direct buffer 是堆内实现的（hasArray()/array() 可用），
+        // 所以原来的 array() + System.arraycopy 写法是有效的，并非崩溃点。
+        // 这里改成逐行 get()、在拷贝的同时完成翻转，行为等价，只是少一次中间数组引用。
         if (flipPixels == null || flipPixels.length < byteCount) flipPixels = new byte[byteCount];
         byte[] out = flipPixels;
         int row = w * 4;
