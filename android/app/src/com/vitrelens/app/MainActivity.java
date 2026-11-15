@@ -3,6 +3,8 @@ package com.vitrelens.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.graphics.Bitmap;
@@ -265,8 +267,12 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         }
         TextView ver = findViewById(R.id.tvVer);
         ver.setText("v" + versionName);
-        // 点版本号手动检查更新（不额外占界面）
+        // 点版本号手动检查更新（不额外占界面）；长按看最近一次导出的诊断数据
         ver.setOnClickListener(v -> checkUpdate(false));
+        ver.setOnLongClickListener(v -> {
+            showDiagDialog("诊断信息 · v" + versionName);
+            return true;
+        });
 
         btnPick.setOnClickListener(v -> pickSource());
         btnExport.setOnClickListener(v -> export());
@@ -1978,7 +1984,9 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 VideoWatermark.transcode(this, input, output, composer, st,
                         (frame, total, stage) -> {
                             if (frame % 3 == 0 || frame >= total) {
-                                setPdMessage(pd, stage + " " + frame + "/" + total);
+                                String live = VideoWatermark.lastLiveNote;
+                                setPdMessage(pd, stage + " " + frame + "/" + total
+                                        + (live == null || live.isEmpty() ? "" : "\n" + live));
                             }
                         }, limit, codecMode, false, motionPhotoLayout);
                 return;
@@ -2035,10 +2043,9 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 setPdMessage(pd, "导出完成");
                 ui.post(() -> {
                     pd.dismiss();
-                    toast("已导出视频 → Movies/VitreLens"
-                            + (VideoWatermark.lastBackendNote == null ? "" : "\n" + VideoWatermark.lastBackendNote)
-                            + (VideoWatermark.lastTimingNote == null ? "" : "\n" + VideoWatermark.lastTimingNote)
-                            + (VideoWatermark.lastColorNote == null ? "" : "\n" + VideoWatermark.lastColorNote));
+                    toast("已导出视频 → Movies/VitreLens");
+                    // 以前这些信息只打到 logcat，用户看不到；现在直接弹出来，还能一键复制
+                    showDiagDialog("视频导出完成 · 诊断");
                 });
             } catch (Throwable t) {
                 if (outUri != null) {
@@ -2056,6 +2063,42 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 });
             }
         });
+    }
+
+    /** 汇总最近一次导出的诊断信息（不依赖 logcat，可直接复制发出来） */
+    private String buildDiagText() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("VitreLens v").append(versionName)
+                .append(" · Android ").append(android.os.Build.VERSION.RELEASE)
+                .append(" · ").append(android.os.Build.MODEL).append("\n\n");
+        appendLine(sb, VideoWatermark.lastBackendNote);
+        appendLine(sb, VideoWatermark.lastTimingNote);
+        appendLine(sb, VideoWatermark.lastGpuNote);
+        appendLine(sb, VideoWatermark.lastColorNote);
+        if (glError != null && !glError.isEmpty()) sb.append("GL 初始化失败：").append(glError).append("\n");
+        sb.append("\n说明：Android 没有公开的「GPU 硬件利用率」接口（高通的 busy 计数在 /sys 下，需要 root）；"
+                + "上面 GPU 每帧耗时与「占每帧比例」是本次导出实测值，「等编码」说明编码器是瓶颈。");
+        return sb.toString();
+    }
+
+    private static void appendLine(StringBuilder sb, String s) {
+        if (s != null && !s.isEmpty()) sb.append(s).append("\n");
+    }
+
+    private void showDiagDialog(String title) {
+        final String text = buildDiagText();
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(text)
+                .setPositiveButton("好", null)
+                .setNeutralButton("复制", (d, w) -> {
+                    try {
+                        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("VitreLens 诊断", text));
+                        toast("诊断信息已复制");
+                    } catch (Throwable ignored) { }
+                })
+                .show();
     }
 
     /* ── 批量导出：一张接一张，前一张写完再切下一张 ── */
@@ -2203,6 +2246,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                                 .show();
                     } else {
                         toast(outMsg);
+                        if (hadVideo) showDiagDialog("动态照片导出完成 · 诊断");
                     }
                     if (onDone != null) onDone.run();
                 });

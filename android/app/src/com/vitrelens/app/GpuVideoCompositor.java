@@ -100,6 +100,10 @@ final class GpuVideoCompositor {
     private int frames;
     /** 调试开关：打印 GPU 合成各阶段耗时 */
     private static final boolean TIMING = false;
+    /** GPU 渲染器型号（例如 Adreno (TM) 740） */
+    private final String rendererName;
+    /** 转码过程中滚动更新的实时统计（供进度框显示） */
+    private volatile String liveLine = "";
 
     static boolean isSupported() {
         // 简单探测：能创建 EGL14 就认为可用；真正的失败在构造时抛异常，由调用方回退
@@ -118,6 +122,8 @@ final class GpuVideoCompositor {
         String frag = readRaw(ctx, R.raw.glass_frag_pbr);
         initEgl(encoderSurface);
         try {
+            String r = GLES20.glGetString(GLES20.GL_RENDERER);
+            rendererName = r == null ? "unknown" : r;
             buildGlassProgram(vert, frag);
             buildAuxPrograms();
             createTextures();
@@ -128,8 +134,29 @@ final class GpuVideoCompositor {
     }
 
     String backendLabel() {
-        String renderer = GLES20.glGetString(GLES20.GL_RENDERER);
-        return "GPU直通(" + (renderer == null ? "?" : renderer) + ")";
+        return "GPU直通(" + rendererName + ")";
+    }
+
+    /** 结束后汇总：每帧各阶段耗时 + GPU 合成占每帧比例（编码等待单独列出） */
+    String statsLine() {
+        int n = Math.max(1, frames);
+        double up = upNs / 1e6 / n;
+        double blur = blurNs / 1e6 / n;
+        double glass = glassNs / 1e6 / n;
+        double overlay = overlayNs / 1e6 / n;
+        double swap = swapNs / 1e6 / n;
+        double busy = up + blur + glass + overlay;
+        double total = busy + swap;
+        return String.format(java.util.Locale.US,
+                "GPU 合成 %s：每帧 %.1fms ＝ 上传 %.1f ＋ 模糊 %.1f ＋ 玻璃 %.1f ＋ 覆盖 %.1f ＋ 等编码 %.1f"
+                        + "（GPU 合成占每帧 %.0f%%）",
+                rendererName, total, up, blur, glass, overlay, swap,
+                total > 0 ? busy * 100 / total : 0);
+    }
+
+    /** 转码中的实时一行统计 */
+    String liveLine() {
+        return liveLine;
     }
 
     // ───────────────────────── EGL ─────────────────────────
@@ -366,6 +393,12 @@ final class GpuVideoCompositor {
         if (!EGL14.eglSwapBuffers(dpy, surf)) throw new RuntimeException("eglSwapBuffers 失败");
         swapNs += System.nanoTime() - t4;
         frames++;
+        if ((frames & 7) == 0) {
+            liveLine = String.format(java.util.Locale.US,
+                    "GPU %.1fms/帧（等编码 %.1fms）· 第 %d 帧",
+                    (upNs + blurNs + glassNs + overlayNs) / 1e6 / frames,
+                    swapNs / 1e6 / frames, frames);
+        }
     }
 
     private void bindQuadAndSetupCommon(WatermarkPainter.Panel p, WatermarkPainter.Style st) {

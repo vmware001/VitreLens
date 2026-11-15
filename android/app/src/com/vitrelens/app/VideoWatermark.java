@@ -41,6 +41,10 @@ class VideoWatermark {
     /** 最近一次转码的后端与分阶段耗时，供进度框和完成提示显示 */
     static volatile String lastBackendNote;
     static volatile String lastTimingNote;
+    /** 最近一次 GPU 直通合成的每帧分段耗时；CPU 回退时为 null */
+    static volatile String lastGpuNote;
+    /** 转码过程中的实时 GPU 统计，供进度框显示 */
+    static volatile String lastLiveNote;
 
     interface Progress {
         void onProgress(int frame, int total, String stage);
@@ -178,6 +182,8 @@ class VideoWatermark {
         // 不跳过的话成片会多出这段内容，相对音频整体超前（实测 OPPO 是 100ms）。
         long videoEditUs = Mp4EditList.videoStartUs(in);
         lastColorNote = null;
+        lastGpuNote = null;
+        lastLiveNote = null;
         Log.i(TAG, "视频色彩：" + yuv.label + "，edit list 偏移 " + videoEditUs + "us");
 
         // ── 1. 先把音轨样本全读进内存（几 KB，安全）
@@ -403,6 +409,8 @@ class VideoWatermark {
             yuvNs = fs.yuvNs;
             composeNs = fs.composeNs;
             blitNs = fs.blitNs;
+            if (gpu != null) lastGpuNote = gpu.statsLine();
+            lastLiveNote = null;
 
             if (cb != null) cb.onProgress(totalFrames, totalFrames, lastBackendNote + " · 收尾编码");
             enc.signalEndOfInputStream();
@@ -759,6 +767,9 @@ class VideoWatermark {
                     stats.blitNs += System.nanoTime() - bs;
                 }
                 stats.done++;
+                if (gpu != null && (stats.done % 8 == 0 || stats.done == totalFrames)) {
+                    lastLiveNote = gpu.liveLine();
+                }
                 if (cb != null && (stats.done % 3 == 0 || stats.done == totalFrames)) {
                     cb.onProgress(stats.done, totalFrames, lastBackendNote + " · 双缓冲流水线");
                 }
