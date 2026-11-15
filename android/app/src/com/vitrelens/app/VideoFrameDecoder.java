@@ -117,19 +117,108 @@ class VideoFrameDecoder {
             dec.start();
         }
 
+        /** 上次返回帧的时间戳；只有目标在它后面时才可能顺序前进 */
+        long lastReturnedPts = Long.MIN_VALUE;
+        boolean positionValid;
+        boolean atEos;
+        /** 允许顺序前进的最大跨度：跨度太大时重新 seek 反而更省 */
+        private static final long FORWARD_MAX_US = 4_000_000L;
+
         Bitmap decodeFrame(long targetUs, int maxDimension) throws Exception {
-            // 每次重新定位到目标时间点：seek 到前一个关键帧，再 flush 掉解码器里的残留状态。
-            ex.seekTo(Math.max(0, targetUs), MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
-            dec.flush();
+            // 帧滑块大多数时候是连续向前拖：这时不要 seek+flush 从关键帧重放，
+            // 直接从当前解码位置继续解新增的几帧（313 帧长 GOP 视频上，单次跳帧从 2s 级降到几十 ms）。
+            if (positionValid && !atEos && targetUs > lastReturnedPts
+                    && targetUs - lastReturnedPts <= FORWARD_MAX_US) {
+                Bitmap forward = decodeLoop(targetUs, maxDimension, false);
+                if (forward != null) return forward;
+            }
+            return decodeLoop(targetUs, maxDimension, true);
+        }
+
+        /**
+         * @param seek true = 先 seek 到目标前一个关键帧并 flush；false = 从当前解码位置继续往前解
+         * @return 解码结果；顺序模式下若发现位置已越过目标（需要 seek）返回 null，由调用方重来
+         */
+        private Bitmap decodeLoop(long targetUs, int maxDimension, boolean seek) throws Exception {
+            if (seek) {
+                ex.seekTo(Math.max(0, targetUs), MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
+                dec.flush();
+                lastReturnedPts = Long.MIN_VALUE;
+                atEos = false;
+            }
+            positionValid = true;
 
             Bitmap best = null;
             long bestPts = Long.MIN_VALUE;
             boolean inputDone = false, outputDone = false;
             int guard = 0;
+            // 两种模式都只多喂一小段：喂太远会让 extractor 跑到目标前面，下一次小步前进只能重新 seek
+            long maxFeedAheadUs = 400_000L;
+            long feedAheadUs = seek ? 200_000L : 34_000L;
 
             while (!outputDone) {
-                if (++guard > 10000) throw new RuntimeException("单帧解码超时");
-                if (!inputDone) {
+                if (++guard > 8000) throw new RuntimeException("单帧解码超时");
+
+                // 先把 decoder 里现成的输出取完，避免还有帧没出来时又喂进后面的样本
+                MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
+                int oi = dec.dequeueOutputBuffer(bi, 10000);
+                if (oi >= 0) {
+                    long pts = bi.presentationTimeUs;
+                    boolean eos = (bi.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+                    Image img = null;
+                    try {
+                        img = dec.getOutputImage(oi);
+                        // 顺序模式下已经返回过的帧不再考虑，避免重复转换
+                        if (img != null && pts > lastReturnedPts) {
+                            boolean take;
+                            if (pts <= targetUs) {
+                                // 目标是「不大于 target 的最后一帧」，每出现一帧都更好
+                                take = true;
+                            } else {
+                                take = best == null || (pts - targetUs) < (targetUs - bestPts);
+                            }
+                            if (take) {
+                                Bitmap next = convertFrame(img, best, maxDimension);
+                                if (next != null) {
+                                    best = next;
+                                    bestPts = pts;
+                                }
+                            }
+                        }
+                    } finally {
+                        if (img != null) img.close();
+                        dec.releaseOutputBuffer(oi, false);
+                    }
+                    if (pts > targetUs && best != null) outputDone = true;
+                    if (eos) {
+                        atEos = true;
+                        outputDone = true;
+                    }
+                    continue;
+                }
+
+                // 没有输出：需要继续喂输入
+                if (inputDone) {
+                    if (best != null) {
+                        outputDone = true;
+                        continue;
+                    }
+                    if (!seek) return null;   // 顺序位置已越过目标，让调用方重新 seek
+                    throw new RuntimeException("这一帧解码失败");
+                }
+                long nextPts = ex.getSampleTime();
+                if (nextPts < 0) {
+                    int ii = dec.dequeueInputBuffer(10000);
+                    if (ii >= 0) {
+                        dec.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        inputDone = true;
+                    } else if (best != null) {
+                        outputDone = true;
+                    }
+                    continue;
+                }
+                boolean canFeed = nextPts <= targetUs + feedAheadUs || feedAheadUs >= maxFeedAheadUs;
+                if (canFeed) {
                     int ii = dec.dequeueInputBuffer(10000);
                     if (ii >= 0) {
                         ByteBuffer ib = dec.getInputBuffer(ii);
@@ -146,41 +235,21 @@ class VideoFrameDecoder {
                             ex.advance();
                         }
                     }
+                    continue;
                 }
-
-                MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
-                int oi = dec.dequeueOutputBuffer(bi, 10000);
-                if (oi < 0) continue;
-                long pts = bi.presentationTimeUs;
-                boolean eos = (bi.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
-                Image img = null;
-                try {
-                    img = dec.getOutputImage(oi);
-                    if (img != null) {
-                        // 先按 PTS 判断这一帧是否会成为最终结果，避免给每个中间帧都转换一次。
-                        boolean take;
-                        if (pts <= targetUs) {
-                            // 目标是「不大于 target 的最后一帧」，每出现一帧都更好
-                            take = true;
-                        } else {
-                            take = best == null || (pts - targetUs) < (targetUs - bestPts);
-                        }
-                        if (take) {
-                            Bitmap next = convertFrame(img, best, maxDimension);
-                            if (next != null) {
-                                best = next;
-                                bestPts = pts;
-                            }
-                        }
-                        if (pts > targetUs && best != null) outputDone = true;
-                    }
-                } finally {
-                    if (img != null) img.close();
-                    dec.releaseOutputBuffer(oi, false);
+                // 已经喂到上限：有候选就收工；还没有任何输出就先放宽上限（解码器需要管线填充）
+                if (best != null) {
+                    outputDone = true;
+                } else {
+                    feedAheadUs = Math.min(feedAheadUs * 2, maxFeedAheadUs);
                 }
-                if (eos) outputDone = true;
             }
-            if (best == null) throw new RuntimeException("这一帧解码失败");
+
+            if (best == null) {
+                if (!seek) return null;   // 顺序位置已越过目标，让调用方重新 seek
+                throw new RuntimeException("这一帧解码失败");
+            }
+            lastReturnedPts = bestPts;
             return best;
         }
 

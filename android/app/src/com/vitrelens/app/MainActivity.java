@@ -55,6 +55,10 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
     private static final int PREVIEW_CAP = 2000;
     /** UI 玻璃在视频帧预览里的重算间隔（ms）：逐帧重算两块面板的 GL 会把拖动拖垮 */
     private static final long UI_GLASS_INTERVAL_MS = 120;
+    /** 背景图按 1/N 分辨率生成：背景本来就要模糊，降采样省 4 倍像素 */
+    private static final int BACKDROP_SCALE_DOWN = 2;
+    /** 调试用：打印视频帧预览各阶段耗时（正常构建保持关闭） */
+    private static final boolean SCRUB_TIMING = false;
     private long lastUiGlassMs;
     /** makeBackdrop 的 centerCrop 中间结果与像素缓冲复用 */
     private Bitmap backdropScaled;
@@ -1210,6 +1214,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         final WatermarkPainter.Style st = style.copy();
         glQueue.execute(() -> {
             Bitmap out = null, bg = null;
+            long t0 = System.nanoTime(), tDecode = 0, tCompose = 0, tBackdrop = 0;
             try {
                 if (decodeFrame || videoRawFrame == null || videoRawIndex != index) {
                     Bitmap fresh = clip.frameAt(clip.timeUsForFrame(index), previewMax());
@@ -1217,14 +1222,20 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                     // 这里不能 recycle（否则下一次解码又要重新分配）。
                     videoRawFrame = fresh;
                     videoRawIndex = index;
+                    tDecode = System.nanoTime() - t0;
                 }
                 Bitmap work = videoRawFrame.copy(Bitmap.Config.ARGB_8888, true);
                 if (work == null) throw new RuntimeException("无法创建预览帧");
+                long c0 = System.nanoTime();
                 out = composer.composeOn(work, work.getWidth(), work.getHeight(), st);
+                tCompose = System.nanoTime() - c0;
+                long b0 = System.nanoTime();
                 bg = makeBackdrop(out);
+                tBackdrop = System.nanoTime() - b0;
             } catch (Throwable t) {
                 Log.w("VitreLens", "视频帧预览失败", t);
             }
+            final long fd = tDecode, fc = tCompose, fb = tBackdrop;
             final Bitmap result = out, background = bg;
             ui.post(() -> {
                 if (result == null) {
@@ -1250,9 +1261,15 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 // UI 玻璃重算要重新跑两块面板的 GL + 圆角；视频帧变化时 120ms 更新一次，
                 // 观感上仍然跟着背景动，但不会把拖动帧率压到个位数。
                 long now = android.os.SystemClock.uptimeMillis();
+                long gu0 = System.nanoTime();
                 if (now - lastUiGlassMs >= UI_GLASS_INTERVAL_MS) {
                     lastUiGlassMs = now;
                     applyUiGlass();
+                }
+                if (SCRUB_TIMING) {
+                    Log.d("VitreLens", String.format(java.util.Locale.US,
+                            "scrubTiming idx=%d decode=%.1fms compose=%.1fms backdrop=%.1fms uiGlass=%.1fms",
+                            index, fd / 1e6, fc / 1e6, fb / 1e6, (System.nanoTime() - gu0) / 1e6));
                 }
             });
         });
@@ -1339,8 +1356,10 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
      * 且左栏与右面板共享同一个模糊半径；面板自身只负责折射、反射和边缘，不再二次模糊。
      */
     private Bitmap makeBackdrop(Bitmap src) {
-        int vw = Math.max(1, backdrop.getWidth());
-        int vh = Math.max(1, backdrop.getHeight());
+        // 背景最终要过一遍高斯并垫在面板后面，分辨率减半肉眼几乎看不出来，
+        // 但缩放/模糊的像素量直接降到 1/4。视频逐帧预览时这是每帧的大头。
+        int vw = Math.max(1, backdrop.getWidth() / BACKDROP_SCALE_DOWN);
+        int vh = Math.max(1, backdrop.getHeight() / BACKDROP_SCALE_DOWN);
         float scale = Math.max(vw / (float) src.getWidth(), vh / (float) src.getHeight());
         int sw = Math.max(vw, Math.round(src.getWidth() * scale));
         int sh = Math.max(vh, Math.round(src.getHeight() * scale));
@@ -1653,12 +1672,14 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
         float vx = vLoc[0] - bLoc[0];
         float vy = vLoc[1] - bLoc[1];
 
-        // 已模糊的整屏背景与视图坐标 1:1 对齐；两块面板取样的就是同一张高斯结果
+        // 背景图是半分辨率的：取样坐标要按比例缩回去，面板玻璃才能对上真实背景
         Bitmap srcBmp = backdropBmp;
-        int bx = Math.max(0, Math.round(vx));
-        int by = Math.max(0, Math.round(vy));
-        int bw = Math.min(vw, srcBmp.getWidth() - bx);
-        int bh = Math.min(vh, srcBmp.getHeight() - by);
+        float sx = srcBmp.getWidth() / (float) Math.max(1, backdrop.getWidth());
+        float sy = srcBmp.getHeight() / (float) Math.max(1, backdrop.getHeight());
+        int bx = Math.max(0, Math.round(vx * sx));
+        int by = Math.max(0, Math.round(vy * sy));
+        int bw = Math.min(Math.round(vw * sx), srcBmp.getWidth() - bx);
+        int bh = Math.min(Math.round(vh * sy), srcBmp.getHeight() - by);
         if (bw < 8 || bh < 8) return;
 
         Bitmap base;
@@ -1679,6 +1700,7 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
 
         glQueue.execute(() -> {
             Bitmap out = null;
+            long tRender = 0;
             try {
                 WatermarkPainter.Panel p = new WatermarkPainter.Panel();
                 p.x = 0;
@@ -1688,21 +1710,30 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 p.r = radiusPx;
                 p.bevel = vh * 0.5f * (ust.depthPct / 100f);
                 p.edgeW = p.bevel;
+                long r0 = System.nanoTime();
                 out = glass.render(base, 0, 0, vw, vh, p, ust, true);
+                tRender = System.nanoTime() - r0;
             } catch (Throwable t) {
                 Log.w("VitreLens", "UI 玻璃渲染失败", t);
             }
             final Bitmap res = out;
+            final long fr = tRender;
             ui.post(() -> {
                 if (res == null) return;
                 // 着色器在圆角之外原样输出背景像素（mask=0），贴到方形 View 上
                 // 四个角就会露出「没处理过的原始背景」—— 看起来就是四个硬棱角。
                 // 这里按圆角把四角抠成透明，露出下面的整屏背景。
-                // 直接按圆角把四角的 alpha 清零。之前用 PorterDuff.DST_IN 画一遍圆角，
+                // 直接按圆角的 alpha 清零。之前用 PorterDuff.DST_IN 画一遍圆角，
                 // 实测在模拟器上没生效 —— 四个角仍然是实心的，于是面板边界看起来是个直角矩形。
+                long m0 = System.nanoTime();
                 Bitmap masked = roundCorners(res, vw, vh, radiusPx);
                 v.setBackground(new android.graphics.drawable.BitmapDrawable(
                         getResources(), masked));
+                if (SCRUB_TIMING) {
+                    Log.d("VitreLens", String.format(java.util.Locale.US,
+                            "uiGlassTiming %dx%d render=%.1fms round=%.1fms",
+                            vw, vh, fr / 1e6, (System.nanoTime() - m0) / 1e6));
+                }
             });
         });
     }
