@@ -345,6 +345,18 @@ class VideoWatermark {
         Surface encSurface = enc.createInputSurface();
         enc.start();
 
+        // 先尝试 GPU 直通合成：玻璃+文字直接画到编码器输入 Surface，省掉 CPU 侧
+        // 「裁条带 → GL → glReadPixels 回读 → Canvas 画回位图 → 再整帧上传」的往返。
+        // 初始化失败就回退到原有 CPU 路径；运行中异常也会回退（见合成循环）。
+        GpuVideoCompositor gpu = null;
+        try {
+            gpu = new GpuVideoCompositor(ctx, encSurface, outW, outH);
+            Log.i(TAG, "GPU 合成器启用：" + gpu.backendLabel());
+        } catch (Throwable t) {
+            Log.w(TAG, "GPU 合成器不可用，回退 CPU 合成：" + t);
+            gpu = null;
+        }
+
         // ── 4. 解码器：输出 YUV ByteBuffer
         // 注意两点：
         //  1. 不能用 ImageReader(RGBA_8888) 当输出面 —— 硬解码器输出端口只认 YUV，
@@ -358,9 +370,9 @@ class VideoWatermark {
         // 旋转前目标尺寸。降档时直接在 YUV 阶段降采样，避免每帧生成完整 8K ARGB。
         int convertW = resizeFrame ? (swapped ? outH : outW) : srcW;
         int convertH = resizeFrame ? (swapped ? outW : outH) : srcH;
-        SurfaceBlitter blitter = new SurfaceBlitter(encSurface, outW, outH);
+        SurfaceBlitter blitter = gpu == null ? new SurfaceBlitter(encSurface, outW, outH) : null;
         lastBackendNote = (softwareCodec(dec.getName()) ? "CPU 解码" : "GPU 解码")
-                + " · " + composer.backendLabel()
+                + " · " + (gpu != null ? gpu.backendLabel() : composer.backendLabel())
                 + " · " + (softwareCodec(enc.getName()) ? "CPU 编码" : "GPU 编码");
         Log.i(TAG, "运行后端：" + lastBackendNote + "｜解码器=" + dec.getName()
                 + "，GL=" + composer.backendDetail() + "，编码器=" + enc.getName());
@@ -382,7 +394,8 @@ class VideoWatermark {
                 vst.gapPct, vst.widthPct, st.gapPct, st.widthPct));
 
         try {
-            FrameStats fs = processParallel(dec, ex, yuv, composer, blitter, enc, video, spool, encFmt,
+            FrameStats fs = processParallel(dec, ex, yuv, composer, blitter, gpu, encSurface,
+                    enc, video, spool, encFmt,
                     srcW, srcH, outW, outH, rotation, swapped, convertW, convertH, resizeFrame,
                     vst, totalFrames, videoEditUs, fps, cb);
             done = fs.done;
@@ -424,7 +437,8 @@ class VideoWatermark {
             Log.e(TAG, "解码循环中断：已合成 " + done + " 帧", t);
             throw t;
         } finally {
-            try { blitter.release(); } catch (Exception ignored) { }
+            try { if (gpu != null) gpu.release(); } catch (Exception ignored) { }
+            try { if (blitter != null) blitter.release(); } catch (Exception ignored) { }
             try { dec.stop(); } catch (Exception ignored) { }
             try { dec.release(); } catch (Exception ignored) { }
             try { enc.stop(); } catch (Exception ignored) { }
@@ -535,9 +549,11 @@ class VideoWatermark {
         }
         lastColorNote = colorNote;
         lastTimingNote = String.format(java.util.Locale.US,
-                "总耗时 %.1fs｜YUV %.1fs｜玻璃 %.1fs｜编码上传 %.1fs",
+                "总耗时 %.1fs｜YUV %.1fs｜%s %.1fs｜%s %.1fs",
                 (System.nanoTime() - transcodeStartNs) / 1e9,
-                yuvNs / 1e9, composeNs / 1e9, blitNs / 1e9);
+                yuvNs / 1e9,
+                gpu != null ? "GPU合成" : "玻璃", composeNs / 1e9,
+                gpu != null ? "GPU上传" : "编码上传", blitNs / 1e9);
         Log.i(TAG, "转码性能：" + lastTimingNote);
         Log.i(TAG, "MP4 封装完成：" + out.length() + " 字节，" + lastColorNote);
         spool.close();
@@ -573,7 +589,8 @@ class VideoWatermark {
     }
 
     private static FrameStats processParallel(MediaCodec dec, MediaExtractor ex, YuvConverter yuv,
-            Composer composer, SurfaceBlitter blitter, MediaCodec enc, List<Sample> video,
+            Composer composer, SurfaceBlitter blitter, GpuVideoCompositor gpu, Surface encSurface,
+            MediaCodec enc, List<Sample> video,
             SampleSpool spool, MediaFormat initialFmt, int srcW, int srcH, int outW, int outH, int rotation,
             boolean swapped, int convertW, int convertH, boolean resizeFrame,
             WatermarkPainter.Style vst, int totalFrames, long videoEditUs, int fps, Progress cb) throws Exception {
@@ -695,6 +712,7 @@ class VideoWatermark {
         producer.start();
 
         try {
+            SurfaceBlitter cpuBlitter = blitter;
             while (true) {
                 FrameSlot slot = ready.take();
                 if (slot.eos) break;
@@ -713,12 +731,33 @@ class VideoWatermark {
                     slot.canvas.restore();
                     work = slot.work;
                 }
+
                 long cs = System.nanoTime();
-                composer.composeVideoOn(work, outW, outH, vst);
-                stats.composeNs += System.nanoTime() - cs;
-                long bs = System.nanoTime();
-                blitter.draw(work, slot.ptsUs);
-                stats.blitNs += System.nanoTime() - bs;
+                boolean gpuFrame = false;
+                if (gpu != null) {
+                    try {
+                        // 版式/明暗按帧计算（背景亮度决定文字深浅与玻璃色调），覆盖层有缓存
+                        WatermarkPainter.Layout L = composer.prepareVideoLayout(work, outW, outH, vst);
+                        Bitmap ov = composer.ensureVideoOverlay(L, vst, outW, outH);
+                        gpu.drawFrame(work, L.panel, vst, ov,
+                                composer.overlayX(), composer.overlayY(), slot.ptsUs);
+                        gpuFrame = true;
+                    } catch (Throwable t) {
+                        Log.w(TAG, "GPU 合成失败，回退 CPU 合成：" + t);
+                        try { gpu.release(); } catch (Throwable ignored) { }
+                        gpu = null;
+                    }
+                }
+                if (gpuFrame) {
+                    stats.composeNs += System.nanoTime() - cs;
+                } else {
+                    composer.composeVideoOn(work, outW, outH, vst);
+                    stats.composeNs += System.nanoTime() - cs;
+                    long bs = System.nanoTime();
+                    if (cpuBlitter == null) cpuBlitter = new SurfaceBlitter(encSurface, outW, outH);
+                    cpuBlitter.draw(work, slot.ptsUs);
+                    stats.blitNs += System.nanoTime() - bs;
+                }
                 stats.done++;
                 if (cb != null && (stats.done % 3 == 0 || stats.done == totalFrames)) {
                     cb.onProgress(stats.done, totalFrames, lastBackendNote + " · 双缓冲流水线");

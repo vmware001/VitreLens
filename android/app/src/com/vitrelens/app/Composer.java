@@ -145,6 +145,15 @@ class Composer {
     /** 只在样式或明暗状态变化时重绘文字/Logo，背景玻璃仍逐帧渲染。 */
     private void drawVideoOverlay(Canvas c, WatermarkPainter.Layout L,
                                   WatermarkPainter.Style st, int W, int H) {
+        Bitmap o = ensureVideoOverlay(L, st, W, H);
+        if (o != null) c.drawBitmap(o, overlayX, overlayY, null);
+    }
+
+    /**
+     * 视频文字/Logo 覆盖层（缓存，透明底）。GPU 合成路径直接把它当纹理叠在玻璃上，
+     * CPU 路径则用 drawVideoOverlay 画到帧位图上。
+     */
+    Bitmap ensureVideoOverlay(WatermarkPainter.Layout L, WatermarkPainter.Style st, int W, int H) {
         int key = (L.darkText ? 1 : 0) | (L.darkLogo ? 2 : 0) | (st.themeDark ? 4 : 0);
         if (overlay == null || overlayStyle != st || overlayLayout != L || overlayKey != key) {
             float u = W / 1000f;
@@ -165,7 +174,34 @@ class Composer {
             overlayLayout = L;
             overlayKey = key;
         }
-        c.drawBitmap(overlay, overlayX, overlayY, null);
+        return overlay;
+    }
+
+    int overlayX() { return overlayX; }
+    int overlayY() { return overlayY; }
+
+    /**
+     * 视频 GPU 合成用：算版式并按背景亮度决定文字深浅 / 玻璃不透明度。
+     * 与 composeInternal 里的逻辑保持一致。
+     */
+    WatermarkPainter.Layout prepareVideoLayout(Bitmap base, int W, int H, WatermarkPainter.Style st) {
+        WatermarkPainter.Layout L;
+        if (videoStyle == st && videoW == W && videoH == H && videoLayout != null) {
+            L = videoLayout;
+        } else {
+            L = WatermarkPainter.layout(W, H, st, 0f, 0f, 0f);
+            videoStyle = st;
+            videoW = W;
+            videoH = H;
+            videoLayout = L;
+        }
+        if (st.autoText) {
+            float lum = WatermarkPainter.measureLum(base, L);
+            L.darkText = st.textHue < 0 && lum > 0.62f;
+            L.darkLogo = lum > 0.62f;
+            st.themeDark = lum < 0.48f;
+        }
+        return L;
     }
 
     /** 取一张正好 cw×ch 的复用裁剪位图（尺寸变化才重新分配；条带尺寸逐帧稳定）。 */
