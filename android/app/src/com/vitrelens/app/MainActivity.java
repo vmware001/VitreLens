@@ -390,7 +390,8 @@ public class MainActivity extends Activity implements SeekBar.OnSeekBarChangeLis
                 + "|" + s.reflPct + "|" + s.transPct + "|" + s.whitePct + "|" + s.dispPct
                 + "|" + s.edgePct + "|" + s.segments + "|" + s.textHue + "|" + s.textSat
                 + "|" + s.textVal + "|" + s.frostTone + "|" + s.tintOn
-                + "|" + (panel != null && panel.keepOriginalVideo);
+                + "|" + (panel != null && panel.keepOriginalVideo)
+                + "|" + getSharedPreferences("vl_video", MODE_PRIVATE).getBoolean("surface_decode", false);
     }
 
     /** 换图 / 退出应用时把缓存删掉 */

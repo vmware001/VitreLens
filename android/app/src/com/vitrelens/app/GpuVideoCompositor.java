@@ -2,6 +2,7 @@ package com.vitrelens.app;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.SurfaceTexture;
 import android.opengl.EGL14;
 import android.opengl.EGLConfig;
 import android.opengl.EGLContext;
@@ -9,8 +10,11 @@ import android.opengl.EGLDisplay;
 import android.opengl.EGLExt;
 import android.opengl.EGLSurface;
 import android.opengl.GLES20;
+import android.opengl.GLES11Ext;
 import android.util.Log;
 import android.view.Surface;
+import android.os.Handler;
+import android.os.HandlerThread;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -20,22 +24,8 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
 /**
- * 视频转码的 GPU 合成器：把「照片 + 液态玻璃 + 文字覆盖层」直接画到编码器的输入 Surface 上。
- *
- * <p>原来的 CPU 链路是：YUV→ARGB（CPU，保留）→ 裁条带 → GL 渲染 → <b>glReadPixels 回读</b>
- * → Canvas 画回位图 → 再上传给编码 Surface。回读/回写一来一回每条带十几 MB，
- * 313 帧 1080p 实测「玻璃 3.1~3.4s + 编码上传 2.3s」。
- *
- * <p>这里保留 CPU 的 YUV→ARGB（HDR 色调映射逻辑不动，色彩零风险），
- * 但玻璃与文字直接在 GPU 上合成到 {@link Surface}：
- * <ul>
- *   <li>编码器 Surface 上建 EGL window surface；</li>
- *   <li>原图上传成纹理，两趟小尺寸降采样当模糊层（等价 CPU 的 scaleInto）；</li>
- *   <li>用与照片导出完全相同的 glass_frag_pbr 着色器整帧渲染（面板外就是原图）；</li>
- *   <li>文字/Logo 覆盖层作为一张透明纹理叠上去；</li>
- *   <li>每帧 eglPresentationTimeANDROID + eglSwapBuffers。</li>
- * </ul>
- * 不再有 glReadPixels，也不再需要 SurfaceBlitter。
+ * 视频 GPU 合成器。SDR AVC 可使用 SurfaceTexture 外部纹理，其他输入上传 CPU 转换后的位图。
+ * 两条路径共享模糊、玻璃、文字覆盖与编码器 Surface。自动文字颜色仅回读 8x4 亮度样本。
  */
 final class GpuVideoCompositor {
 
@@ -60,6 +50,44 @@ final class GpuVideoCompositor {
             + "uniform sampler2D u_tex;\n"
             + "void main(){ gl_FragColor = texture2D(u_tex, v_uv); }\n";
 
+    private static final String OES_FRAG = "#extension GL_OES_EGL_image_external : require\n"
+            + "precision mediump float;\n"
+            + "varying vec2 v_uv;\n"
+            + "uniform samplerExternalOES u_tex;\n"
+            + "uniform mat4 u_texMatrix;\n"
+            + "uniform int u_rotation;\n"
+            + "void main(){\n"
+            + "  vec2 uv=v_uv-0.5;\n"
+            + "  if(u_rotation==90) uv=vec2(-uv.y,uv.x);\n"
+            + "  else if(u_rotation==180) uv=-uv;\n"
+            + "  else if(u_rotation==270) uv=vec2(uv.y,-uv.x);\n"
+            + "  vec2 p=uv+0.5;\n"
+            + "  gl_FragColor=texture2D(u_tex,(u_texMatrix*vec4(p,0.0,1.0)).xy);\n"
+            + "}\n";
+
+    private static final String LUMA_FRAG = "#extension GL_OES_EGL_image_external : require\n"
+            + "precision highp float;\n"
+            + "uniform samplerExternalOES u_tex;\n"
+            + "uniform mat4 u_texMatrix;\n"
+            + "uniform int u_rotation;\n"
+            + "uniform vec4 u_panel;\n"
+            + "uniform vec2 u_res;\n"
+            + "void main(){\n"
+            + "  float gx=floor(gl_FragCoord.x);\n"
+            + "  float gy=3.0-floor(gl_FragCoord.y);\n"
+            + "  float x0=max(0.0,floor(u_panel.x));\n"
+            + "  float y0=max(0.0,floor(u_panel.y));\n"
+            + "  float x1=min(u_res.x,floor(u_panel.x+u_panel.z));\n"
+            + "  float y1=min(u_res.y,floor(u_panel.y+u_panel.w));\n"
+            + "  float px=x0+floor((x1-x0)*(2.0*gx+1.0)/16.0);\n"
+            + "  float py=y0+floor((y1-y0)*(2.0*gy+1.0)/8.0);\n"
+            + "  vec2 uv=vec2((px+0.5)/u_res.x,1.0-(py+0.5)/u_res.y)-0.5;\n"
+            + "  if(u_rotation==90) uv=vec2(-uv.y,uv.x);\n"
+            + "  else if(u_rotation==180) uv=-uv;\n"
+            + "  else if(u_rotation==270) uv=vec2(uv.y,-uv.x);\n"
+            + "  gl_FragColor=vec4(texture2D(u_tex,(u_texMatrix*vec4(uv+0.5,0.0,1.0)).xy).rgb,1.0);\n"
+            + "}\n";
+
     private static final int EGL_RECORDABLE_ANDROID = 0x3142;
 
     private EGLDisplay dpy = EGL14.EGL_NO_DISPLAY;
@@ -69,7 +97,22 @@ final class GpuVideoCompositor {
     private final int outW, outH;
 
     private int glassProgram, glassVert, glassFrag;
-    private int copyProgram, overlayProgram;
+    private int copyProgram, overlayProgram, oesProgram, lumaProgram;
+    private int oesTexture;
+    private int lumaTexture, lumaFbo;
+    private int uOesTex, uOesMatrix, uOesRotation, aOesPos;
+    private int uLumaTex, uLumaPanel, uLumaRes, uLumaMatrix, uLumaRotation, aLumaPos;
+    private int surfaceRotation;
+    private SurfaceTexture decoderTexture;
+    private Surface decoderSurface;
+    private HandlerThread frameThread;
+    private Handler frameHandler;
+    private final Object frameLock = new Object();
+    private boolean framePending;
+    private boolean frameClosed;
+    private float[] oesMatrix = new float[16];
+    private final ByteBuffer lumaReadback = ByteBuffer.allocateDirect(4 * 8 * 4)
+            .order(ByteOrder.nativeOrder());
     private int quadBuf;
     private FloatBuffer quad;
 
@@ -96,7 +139,7 @@ final class GpuVideoCompositor {
     private boolean uniformsReady;
 
     /** 分阶段累计耗时（纳秒），release 时打印一次，用于定位瓶颈 */
-    private long upNs, blurNs, glassNs, overlayNs, swapNs;
+    private long upNs, blurNs, glassNs, overlayNs, swapNs, surfaceNs, lumaNs;
     private int frames;
     /** 调试开关：打印 GPU 合成各阶段耗时 */
     private static final boolean TIMING = false;
@@ -137,21 +180,13 @@ final class GpuVideoCompositor {
         return "GPU直通(" + rendererName + ")";
     }
 
-    /** 结束后汇总：每帧各阶段耗时 + GPU 合成占每帧比例（编码等待单独列出） */
+    /** CPU 侧调用墙钟时间，包含驱动同步等待。 */
     String statsLine() {
         int n = Math.max(1, frames);
-        double up = upNs / 1e6 / n;
-        double blur = blurNs / 1e6 / n;
-        double glass = glassNs / 1e6 / n;
-        double overlay = overlayNs / 1e6 / n;
-        double swap = swapNs / 1e6 / n;
-        double busy = up + blur + glass + overlay;
-        double total = busy + swap;
         return String.format(java.util.Locale.US,
-                "GPU 合成 %s：每帧 %.1fms ＝ 上传 %.1f ＋ 模糊 %.1f ＋ 玻璃 %.1f ＋ 覆盖 %.1f ＋ 等编码 %.1f"
-                        + "（GPU 合成占每帧 %.0f%%）",
-                rendererName, total, up, blur, glass, overlay, swap,
-                total > 0 ? busy * 100 / total : 0);
+                "GL 调用墙钟 %s（ms/帧）：上传 %.1f，Surface 等帧/转换 %.1f，亮度采样 %.1f，模糊 %.1f，玻璃 %.1f，覆盖 %.1f，交换 %.1f。系统 GPU 利用率未提供",
+                rendererName, upNs / 1e6 / n, surfaceNs / 1e6 / n, lumaNs / 1e6 / n,
+                blurNs / 1e6 / n, glassNs / 1e6 / n, overlayNs / 1e6 / n, swapNs / 1e6 / n);
     }
 
     /** 转码中的实时一行统计 */
@@ -287,6 +322,42 @@ final class GpuVideoCompositor {
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
     }
 
+    private void buildSurfacePrograms() {
+        int v3 = compile(GLES20.GL_VERTEX_SHADER, VERT);
+        int f3 = compile(GLES20.GL_FRAGMENT_SHADER, OES_FRAG);
+        oesProgram = link(v3, f3);
+        aOesPos = GLES20.glGetAttribLocation(oesProgram, "a_pos");
+        uOesTex = GLES20.glGetUniformLocation(oesProgram, "u_tex");
+        uOesMatrix = GLES20.glGetUniformLocation(oesProgram, "u_texMatrix");
+        uOesRotation = GLES20.glGetUniformLocation(oesProgram, "u_rotation");
+
+        int v4 = compile(GLES20.GL_VERTEX_SHADER, VERT);
+        int f4 = compile(GLES20.GL_FRAGMENT_SHADER, LUMA_FRAG);
+        lumaProgram = link(v4, f4);
+        aLumaPos = GLES20.glGetAttribLocation(lumaProgram, "a_pos");
+        uLumaTex = GLES20.glGetUniformLocation(lumaProgram, "u_tex");
+        uLumaPanel = GLES20.glGetUniformLocation(lumaProgram, "u_panel");
+        uLumaRes = GLES20.glGetUniformLocation(lumaProgram, "u_res");
+        uLumaMatrix = GLES20.glGetUniformLocation(lumaProgram, "u_texMatrix");
+        uLumaRotation = GLES20.glGetUniformLocation(lumaProgram, "u_rotation");
+
+        int[] t = new int[2];
+        GLES20.glGenTextures(2, t, 0);
+        oesTexture = t[0];
+        lumaTexture = t[1];
+        bindLinear(lumaTexture);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, 8, 4, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+        int[] f = new int[1];
+        GLES20.glGenFramebuffers(1, f, 0);
+        lumaFbo = f[0];
+    }
+
     private void createTextures() {
         int[] t = new int[4];
         GLES20.glGenTextures(4, t, 0);
@@ -298,7 +369,6 @@ final class GpuVideoCompositor {
         bindLinear(texBlur1);
         bindLinear(texBlur2);
         bindLinear(texOverlay);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
     }
 
     private static void bindLinear(int tex) {
@@ -310,6 +380,172 @@ final class GpuVideoCompositor {
     }
 
     // ───────────────────────── 每帧 ─────────────────────────
+
+    /** Create the decoder input Surface; call before configuring and starting the decoder. */
+    synchronized Surface createDecoderSurface(int width, int height) {
+        if (decoderSurface != null) throw new IllegalStateException("decoder surface already created");
+        if (width <= 0 || height <= 0) throw new IllegalArgumentException("invalid decoder size");
+        if (!EGL14.eglMakeCurrent(dpy, surf, surf, ctx)) throw new RuntimeException("eglMakeCurrent 失败");
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texPhoto);
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, outW, outH, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
+        photoW = outW;
+        photoH = outH;
+        buildSurfacePrograms();
+        decoderTexture = new SurfaceTexture(oesTexture);
+        decoderTexture.setDefaultBufferSize(width, height);
+        frameThread = new HandlerThread("vl-surface-frame");
+        frameThread.start();
+        frameHandler = new Handler(frameThread.getLooper());
+        decoderTexture.setOnFrameAvailableListener(st -> {
+            synchronized (frameLock) {
+                framePending = true;
+                frameLock.notifyAll();
+            }
+        }, frameHandler);
+        decoderSurface = new Surface(decoderTexture);
+        return decoderSurface;
+    }
+
+    /** Wait for one decoder output, then latch and normalize it on the EGL/GL owner thread. */
+    synchronized void awaitSurfaceFrame(int rotation) throws InterruptedException {
+        if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)
+            throw new IllegalArgumentException("rotation must be 0/90/180/270");
+        SurfaceTexture st = decoderTexture;
+        if (st == null) throw new IllegalStateException("decoder surface not created");
+        long startNs = System.nanoTime();
+        long deadline = android.os.SystemClock.elapsedRealtime() + 5000;
+        synchronized (frameLock) {
+            while (!framePending && !frameClosed) {
+                long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+                if (remaining <= 0) throw new RuntimeException("decoder SurfaceTexture frame timeout");
+                frameLock.wait(remaining);
+            }
+            if (frameClosed) throw new IllegalStateException("decoder surface is closed");
+            framePending = false;
+        }
+        if (!EGL14.eglMakeCurrent(dpy, surf, surf, ctx)) throw new RuntimeException("eglMakeCurrent 失败");
+        st.updateTexImage();
+        st.getTransformMatrix(oesMatrix);
+        surfaceRotation = rotation;
+        surfaceNs += System.nanoTime() - startNs;
+    }
+
+    private void normalizeSurfaceFrame() {
+        long startNs = System.nanoTime();
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, lumaFbo);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+                GLES20.GL_TEXTURE_2D, texPhoto, 0);
+        GLES20.glViewport(0, 0, outW, outH);
+        GLES20.glUseProgram(oesProgram);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture);
+        GLES20.glUniform1i(uOesTex, 0);
+        GLES20.glUniformMatrix4fv(uOesMatrix, 1, false, oesMatrix, 0);
+        GLES20.glUniform1i(uOesRotation, surfaceRotation);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quadBuf);
+        GLES20.glEnableVertexAttribArray(aOesPos);
+        GLES20.glVertexAttribPointer(aOesPos, 2, GLES20.GL_FLOAT, false, 0, 0);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        if (GLES20.glGetError() != GLES20.GL_NO_ERROR) throw new RuntimeException("OES decoder frame draw failed");
+        surfaceNs += System.nanoTime() - startNs;
+    }
+
+    /** Match WatermarkPainter.measureLum with only a 4x8 RGBA readback. */
+    float measureSurfaceLum(WatermarkPainter.Layout layout) {
+        if (layout == null) return 0f;
+        long startNs = System.nanoTime();
+        if (!EGL14.eglMakeCurrent(dpy, surf, surf, ctx)) throw new RuntimeException("eglMakeCurrent 失败");
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, lumaFbo);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+                GLES20.GL_TEXTURE_2D, lumaTexture, 0);
+        GLES20.glViewport(0, 0, 8, 4);
+        GLES20.glUseProgram(lumaProgram);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture);
+        GLES20.glUniform1i(uLumaTex, 0);
+        GLES20.glUniformMatrix4fv(uLumaMatrix, 1, false, oesMatrix, 0);
+        GLES20.glUniform1i(uLumaRotation, surfaceRotation);
+        GLES20.glUniform4f(uLumaPanel, layout.panel.x, layout.panel.y, layout.panel.w, layout.panel.h);
+        GLES20.glUniform2f(uLumaRes, outW, outH);
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quadBuf);
+        GLES20.glEnableVertexAttribArray(aLumaPos);
+        GLES20.glVertexAttribPointer(aLumaPos, 2, GLES20.GL_FLOAT, false, 0, 0);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+        lumaReadback.clear();
+        GLES20.glReadPixels(0, 0, 8, 4, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, lumaReadback);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        long sum = 0;
+        for (int i = 0; i < 32; i++) {
+            int r = lumaReadback.get(i * 4) & 0xff;
+            int g = lumaReadback.get(i * 4 + 1) & 0xff;
+            int b = lumaReadback.get(i * 4 + 2) & 0xff;
+            sum += (long) (0.2126 * r + 0.7152 * g + 0.0722 * b);
+        }
+        lumaNs += System.nanoTime() - startNs;
+        return sum / (32f * 255f);
+    }
+
+    /** Render a latched surface frame through the existing blur/glass/overlay stages. */
+    void drawSurfaceFrame(WatermarkPainter.Panel panel, WatermarkPainter.Style style,
+                          Bitmap overlay, int overlayX, int overlayY, long ptsUs) {
+        normalizeSurfaceFrame();
+        drawPhotoTexture(panel, style, overlay, overlayX, overlayY, ptsUs);
+    }
+
+    private void drawPhotoTexture(WatermarkPainter.Panel panel, WatermarkPainter.Style style,
+                                  Bitmap overlay, int overlayX, int overlayY, long ptsUs) {
+        if (!EGL14.eglMakeCurrent(dpy, surf, surf, ctx)) throw new RuntimeException("eglMakeCurrent 失败");
+        long t0 = System.nanoTime();
+        renderBlur(fbo1, texBlur1, Math.max(8, outW / 22), Math.max(8, outH / 22), 1);
+        renderBlur(fbo2, texBlur2, Math.max(6, outW / 72), Math.max(6, outH / 72), 2);
+        long t1 = System.nanoTime();
+
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        GLES20.glViewport(0, 0, outW, outH);
+        GLES20.glUseProgram(glassProgram);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texPhoto);
+        GLES20.glUniform1i(uPhoto, 0);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texBlur1);
+        GLES20.glUniform1i(uBlur, 1);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texBlur2);
+        GLES20.glUniform1i(uBlur2, 2);
+        bindQuadAndSetupCommon(panel, style);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
+        long t2 = System.nanoTime();
+
+        if (overlay != null && overlay.getWidth() > 0 && overlay.getHeight() > 0) {
+            if (!overlaySet || overlay != overlayRef
+                    || overlayW != overlay.getWidth() || overlayH != overlay.getHeight()) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texOverlay);
+                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, overlay, 0);
+                overlayW = overlay.getWidth();
+                overlayH = overlay.getHeight();
+                overlayRef = overlay;
+                overlaySet = true;
+            }
+            drawOverlayQuad(overlayX, overlayY, overlayW, overlayH);
+        }
+        long t3 = System.nanoTime();
+        EGLExt.eglPresentationTimeANDROID(dpy, surf, ptsUs * 1000L);
+        if (!EGL14.eglSwapBuffers(dpy, surf)) throw new RuntimeException("eglSwapBuffers 失败");
+        long t4 = System.nanoTime();
+        blurNs += t1 - t0;
+        glassNs += t2 - t1;
+        overlayNs += t3 - t2;
+        swapNs += t4 - t3;
+        frames++;
+        if ((frames & 7) == 0) {
+            liveLine = String.format(java.util.Locale.US,
+                    "GL 调用墙钟 %.1fms/帧（交换 %.1fms）· 第 %d 帧",
+                    (upNs + surfaceNs + lumaNs + blurNs + glassNs + overlayNs) / 1e6 / frames,
+                    swapNs / 1e6 / frames, frames);
+        }
+    }
 
     /**
      * 画一帧：上传照片纹理 → 两趟降采样出模糊层 → 玻璃整帧渲染 → 文字覆盖 → 送编码器。
@@ -344,61 +580,7 @@ final class GpuVideoCompositor {
         long t1 = System.nanoTime();
         upNs += t1 - t0;
 
-        // 2) 模糊层：把原图缩到 1/22 与 1/72（等价 CPU 路径的 scaleInto，观感一致）
-        int bw1 = Math.max(8, outW / 22);
-        int bh1 = Math.max(8, outH / 22);
-        int bw2 = Math.max(6, outW / 72);
-        int bh2 = Math.max(6, outH / 72);
-        renderBlur(fbo1, texBlur1, bw1, bh1, 1);
-        renderBlur(fbo2, texBlur2, bw2, bh2, 2);
-        long t2 = System.nanoTime();
-        blurNs += t2 - t1;
-
-        // 3) 玻璃整帧渲染到编码器 Surface
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
-        GLES20.glViewport(0, 0, outW, outH);
-        GLES20.glUseProgram(glassProgram);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texPhoto);
-        GLES20.glUniform1i(uPhoto, 0);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texBlur1);
-        GLES20.glUniform1i(uBlur, 1);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE2);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texBlur2);
-        GLES20.glUniform1i(uBlur2, 2);
-
-        bindQuadAndSetupCommon(panel, st);
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
-        long t3 = System.nanoTime();
-        glassNs += t3 - t2;
-
-        // 4) 文字覆盖层（只在换图时上传一次）
-        if (overlay != null && overlay.getWidth() > 0 && overlay.getHeight() > 0) {
-            if (!overlaySet || overlay != overlayRef
-                    || overlayW != overlay.getWidth() || overlayH != overlay.getHeight()) {
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texOverlay);
-                android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, overlay, 0);
-                overlayW = overlay.getWidth();
-                overlayH = overlay.getHeight();
-                overlayRef = overlay;
-                overlaySet = true;
-            }
-            drawOverlayQuad(overlayX, overlayY, overlayW, overlayH);
-        }
-        long t4 = System.nanoTime();
-        overlayNs += t4 - t3;
-
-        EGLExt.eglPresentationTimeANDROID(dpy, surf, ptsUs * 1000L);
-        if (!EGL14.eglSwapBuffers(dpy, surf)) throw new RuntimeException("eglSwapBuffers 失败");
-        swapNs += System.nanoTime() - t4;
-        frames++;
-        if ((frames & 7) == 0) {
-            liveLine = String.format(java.util.Locale.US,
-                    "GPU %.1fms/帧（等编码 %.1fms）· 第 %d 帧",
-                    (upNs + blurNs + glassNs + overlayNs) / 1e6 / frames,
-                    swapNs / 1e6 / frames, frames);
-        }
+        drawPhotoTexture(panel, st, overlay, overlayX, overlayY, ptsUs);
     }
 
     private void bindQuadAndSetupCommon(WatermarkPainter.Panel p, WatermarkPainter.Style st) {
@@ -499,6 +681,26 @@ final class GpuVideoCompositor {
 
     synchronized void release() {
         if (dpy == EGL14.EGL_NO_DISPLAY) return;
+        synchronized (frameLock) {
+            frameClosed = true;
+            framePending = false;
+            frameLock.notifyAll();
+        }
+        if (frameThread != null) {
+            frameThread.quitSafely();
+            try { frameThread.join(1000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            frameThread = null;
+            frameHandler = null;
+        }
+        if (decoderTexture != null) {
+            try { decoderTexture.setOnFrameAvailableListener(null); } catch (Throwable ignored) { }
+            try { decoderTexture.release(); } catch (Throwable ignored) { }
+            decoderTexture = null;
+        }
+        if (decoderSurface != null) {
+            try { decoderSurface.release(); } catch (Throwable ignored) { }
+            decoderSurface = null;
+        }
         if (TIMING && frames > 0) {
             Log.i(TAG, String.format(java.util.Locale.US,
                     "GPU合成均耗时：帧=%d 上传=%.2fms 模糊=%.2fms 玻璃=%.2fms 覆盖=%.2fms 交换=%.2fms",
@@ -507,13 +709,15 @@ final class GpuVideoCompositor {
         }
         try {
             EGL14.eglMakeCurrent(dpy, surf, surf, ctx);
-            int[] t = {texPhoto, texBlur1, texBlur2, texOverlay};
-            GLES20.glDeleteTextures(4, t, 0);
-            int[] f = {fbo1, fbo2};
-            GLES20.glDeleteFramebuffers(2, f, 0);
+            int[] t = {texPhoto, texBlur1, texBlur2, texOverlay, oesTexture, lumaTexture};
+            GLES20.glDeleteTextures(6, t, 0);
+            int[] f = {fbo1, fbo2, lumaFbo};
+            GLES20.glDeleteFramebuffers(3, f, 0);
             if (glassProgram != 0) GLES20.glDeleteProgram(glassProgram);
             if (copyProgram != 0) GLES20.glDeleteProgram(copyProgram);
             if (overlayProgram != 0) GLES20.glDeleteProgram(overlayProgram);
+            if (oesProgram != 0) GLES20.glDeleteProgram(oesProgram);
+            if (lumaProgram != 0) GLES20.glDeleteProgram(lumaProgram);
             if (quadBuf != 0) {
                 int[] b = {quadBuf};
                 GLES20.glDeleteBuffers(1, b, 0);

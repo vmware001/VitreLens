@@ -127,6 +127,24 @@ class VideoWatermark {
                           WatermarkPainter.Style st, Progress cb, int maxDimension,
                           int codecMode, boolean allowDownscale,
                           boolean motionPhotoLayout) throws Exception {
+        try {
+            return transcodeInternal(ctx, in, out, composer, st, cb, maxDimension,
+                    codecMode, allowDownscale, motionPhotoLayout, true);
+        } catch (SurfacePathException surfaceError) {
+            Log.w(TAG, "Surface 解码实验失败，重新使用 YUV 路径转码", surfaceError);
+            return transcodeInternal(ctx, in, out, composer, st, cb, maxDimension,
+                    codecMode, allowDownscale, motionPhotoLayout, false);
+        }
+    }
+
+    private static final class SurfacePathException extends Exception {
+        SurfacePathException(Throwable cause) { super(cause); }
+    }
+
+    private static long transcodeInternal(Context ctx, File in, File out, Composer composer,
+                           WatermarkPainter.Style st, Progress cb, int maxDimension,
+                           int codecMode, boolean allowDownscale,
+                           boolean motionPhotoLayout, boolean surfaceAllowed) throws Exception {
         MediaExtractor ex = new MediaExtractor();
         ex.setDataSource(in.getAbsolutePath());
 
@@ -363,14 +381,39 @@ class VideoWatermark {
             gpu = null;
         }
 
-        // ── 4. 解码器：输出 YUV ByteBuffer
-        // 注意两点：
+        // ── 4. 实验开关允许 SDR AVC 输出到 SurfaceTexture，其余输入走 YUV。
+        // YUV 路径的兼容处理：
         //  1. 不能用 ImageReader(RGBA_8888) 当输出面 —— 硬解码器输出端口只认 YUV，
         //     让它写 RGBA 会 setPortMode(DynamicANWBuffer) 失败，configure 直接报错；
         //  2. 不强行指定 KEY_COLOR_FORMAT，让解码器自己挑它支持的 YUV 格式。
         //  3. 逐个解码器试：有的机器上首个（通常是硬解）会 configure 失败，要能回退到软解。
-        MediaCodec dec = openDecoder(vMime, vf, codecMode == 1);
-        dec.start();
+        boolean surfaceDecode = surfaceAllowed
+                && ctx.getSharedPreferences("vl_video", Context.MODE_PRIVATE).getBoolean("surface_decode", false)
+                && gpu != null && codecMode == 0
+                && !hdrSource && getInt(vf, MediaFormat.KEY_COLOR_STANDARD, 0) != MediaFormat.COLOR_STANDARD_BT2020
+                && "video/avc".equalsIgnoreCase(vMime);
+        MediaCodec dec = null;
+        try {
+            Surface decoderSurface = surfaceDecode ? gpu.createDecoderSurface(srcW, srcH) : null;
+            int sourceRotation = getInt(vf, "rotation-degrees", 0);
+            try {
+                // Surface 输出的旋转统一交给 GPU，避免解码器与着色器重复旋转。
+                if (surfaceDecode) vf.setInteger("rotation-degrees", 0);
+                dec = openDecoder(vMime, vf, codecMode == 1, decoderSurface);
+                dec.start();
+            } finally {
+                vf.setInteger("rotation-degrees", sourceRotation);
+            }
+        } catch (Throwable t) {
+            if (dec != null) try { dec.release(); } catch (Exception ignored) { }
+            if (gpu != null) try { gpu.release(); } catch (Exception ignored) { }
+            try { enc.stop(); } catch (Exception ignored) { }
+            try { enc.release(); } catch (Exception ignored) { }
+            encSurface.release();
+            ex.release();
+            if (surfaceDecode) throw new SurfacePathException(t);
+            throw new RuntimeException("解码器初始化失败", t);
+        }
 
         boolean resizeFrame = rotation != 0 || outW != srcW || outH != srcH;
         // 旋转前目标尺寸。降档时直接在 YUV 阶段降采样，避免每帧生成完整 8K ARGB。
@@ -378,6 +421,7 @@ class VideoWatermark {
         int convertH = resizeFrame ? (swapped ? outW : outH) : srcH;
         SurfaceBlitter blitter = gpu == null ? new SurfaceBlitter(encSurface, outW, outH) : null;
         lastBackendNote = (softwareCodec(dec.getName()) ? "CPU 解码" : "GPU 解码")
+                + (surfaceDecode ? " → SurfaceTexture" : " → YUV")
                 + " · " + (gpu != null ? gpu.backendLabel() : composer.backendLabel())
                 + " · " + (softwareCodec(enc.getName()) ? "CPU 编码" : "GPU 编码");
         Log.i(TAG, "运行后端：" + lastBackendNote + "｜解码器=" + dec.getName()
@@ -400,7 +444,10 @@ class VideoWatermark {
                 vst.gapPct, vst.widthPct, st.gapPct, st.widthPct));
 
         try {
-            FrameStats fs = processParallel(dec, ex, yuv, composer, blitter, gpu, encSurface,
+            FrameStats fs = surfaceDecode
+                    ? processSurface(dec, ex, composer, gpu, enc, video, spool, encFmt,
+                            outW, outH, rotation, vst, totalFrames, videoEditUs, fps, cb)
+                    : processParallel(dec, ex, yuv, composer, blitter, gpu, encSurface,
                     enc, video, spool, encFmt,
                     srcW, srcH, outW, outH, rotation, swapped, convertW, convertH, resizeFrame,
                     vst, totalFrames, videoEditUs, fps, cb);
@@ -443,12 +490,14 @@ class VideoWatermark {
             }
         } catch (Throwable t) {
             Log.e(TAG, "解码循环中断：已合成 " + done + " 帧", t);
+            spool.close();
+            if (surfaceDecode) throw new SurfacePathException(t);
             throw t;
         } finally {
-            try { if (gpu != null) gpu.release(); } catch (Exception ignored) { }
-            try { if (blitter != null) blitter.release(); } catch (Exception ignored) { }
             try { dec.stop(); } catch (Exception ignored) { }
             try { dec.release(); } catch (Exception ignored) { }
+            try { if (gpu != null) gpu.release(); } catch (Exception ignored) { }
+            try { if (blitter != null) blitter.release(); } catch (Exception ignored) { }
             try { enc.stop(); } catch (Exception ignored) { }
             try { enc.release(); } catch (Exception ignored) { }
             try { encSurface.release(); } catch (Exception ignored) { }
@@ -594,6 +643,81 @@ class VideoWatermark {
         int done;
         long yuvNs, composeNs, blitNs;
         MediaFormat encFmt;
+    }
+
+    /** 每次只释放一帧到 Surface，消费完成后再释放下一帧，防止离线导出丢帧。 */
+    private static FrameStats processSurface(MediaCodec dec, MediaExtractor ex,
+            Composer composer, GpuVideoCompositor gpu, MediaCodec enc, List<Sample> video,
+            SampleSpool spool, MediaFormat initialFmt, int outW, int outH, int rotation,
+            WatermarkPainter.Style vst, int totalFrames, long videoEditUs, int fps,
+            Progress cb) throws Exception {
+        FrameStats stats = new FrameStats();
+        stats.encFmt = initialFmt;
+        boolean inputDone = false;
+        boolean outputDone = false;
+        long lastPts = Long.MIN_VALUE;
+        long syntheticPts = 0;
+        long frameUs = Math.max(1, Math.round(1000000.0 / Math.max(1, fps)));
+        long lastActivity = System.nanoTime();
+        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        while (!outputDone) {
+            stats.encFmt = drain(enc, video, stats.encFmt, spool);
+            while (!inputDone) {
+                int inputIndex = dec.dequeueInputBuffer(0);
+                if (inputIndex < 0) break;
+                ByteBuffer input = dec.getInputBuffer(inputIndex);
+                if (input == null) throw new RuntimeException("解码器输入缓冲为空");
+                long need = ex.getSampleSize();
+                if (need > input.capacity()) throw new RuntimeException("关键帧超过解码器输入缓冲");
+                int size = ex.readSampleData(input, 0);
+                if (size < 0) {
+                    dec.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                    inputDone = true;
+                } else {
+                    long pts = ex.getSampleTime();
+                    if (pts < 0) pts = syntheticPts;
+                    syntheticPts += frameUs;
+                    int flags = (ex.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                            ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                    dec.queueInputBuffer(inputIndex, 0, size, pts, flags);
+                    ex.advance();
+                }
+                lastActivity = System.nanoTime();
+            }
+            int outputIndex = dec.dequeueOutputBuffer(info, 10000);
+            if (outputIndex < 0) {
+                if (System.nanoTime() - lastActivity > 30_000_000_000L) {
+                    throw new RuntimeException("Surface 解码器长时间没有输出");
+                }
+                continue;
+            }
+            lastActivity = System.nanoTime();
+            outputDone = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+            boolean render = info.size > 0 && info.presentationTimeUs != lastPts
+                    && info.presentationTimeUs >= videoEditUs
+                    && (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0;
+            long pts = info.presentationTimeUs;
+            dec.releaseOutputBuffer(outputIndex, render);
+            if (!render) continue;
+
+            long start = System.nanoTime();
+            gpu.awaitSurfaceFrame(rotation);
+            WatermarkPainter.Layout layout = composer.prepareVideoLayout(null, outW, outH, vst);
+            if (vst.autoText) Composer.applyVideoLum(layout, vst, gpu.measureSurfaceLum(layout));
+            Bitmap overlay = composer.ensureVideoOverlay(layout, vst, outW, outH);
+            gpu.drawSurfaceFrame(layout.panel, vst, overlay,
+                    composer.overlayX(), composer.overlayY(), pts);
+            stats.composeNs += System.nanoTime() - start;
+            stats.done++;
+            lastPts = pts;
+            if (stats.done % 8 == 0) lastLiveNote = gpu.liveLine();
+            if (cb != null && (stats.done % 3 == 0 || stats.done == totalFrames)) {
+                cb.onProgress(stats.done, totalFrames, lastBackendNote + " · Surface 流水线");
+            }
+            stats.encFmt = drain(enc, video, stats.encFmt, spool);
+        }
+        if (stats.done == 0) throw new RuntimeException("Surface 解码器没有输出画面");
+        return stats;
     }
 
     private static FrameStats processParallel(MediaCodec dec, MediaExtractor ex, YuvConverter yuv,
@@ -894,6 +1018,10 @@ class VideoWatermark {
     }
 
     static MediaCodec openDecoder(String mime, MediaFormat fmt, boolean software) {
+        return openDecoder(mime, fmt, software, null);
+    }
+
+    private static MediaCodec openDecoder(String mime, MediaFormat fmt, boolean software, Surface surface) {
         final boolean dolby = "video/dolby-vision".equalsIgnoreCase(mime);
         List<String> names = new ArrayList<String>();
         names.add(mime);
@@ -934,7 +1062,7 @@ class VideoWatermark {
                     fmt.removeKey("bl_compatibility_id");
                 }
                 if (hevcFallback) Log.i(TAG, "HEVC 兼容配置：" + fmt);
-                c.configure(fmt, null, null, 0);
+                c.configure(fmt, surface, null, 0);
                 Log.i(TAG, "解码器：" + n + (hevcFallback ? "（杜比视界 HEVC 基层）" : ""));
                 return c;
             } catch (Throwable t) {

@@ -195,13 +195,16 @@ class Composer {
             videoH = H;
             videoLayout = L;
         }
-        if (st.autoText) {
-            float lum = WatermarkPainter.measureLum(base, L);
-            L.darkText = st.textHue < 0 && lum > 0.62f;
-            L.darkLogo = lum > 0.62f;
-            st.themeDark = lum < 0.48f;
+        if (st.autoText && base != null) {
+            applyVideoLum(L, st, WatermarkPainter.measureLum(base, L));
         }
         return L;
+    }
+
+    static void applyVideoLum(WatermarkPainter.Layout layout, WatermarkPainter.Style st, float lum) {
+        layout.darkText = st.textHue < 0 && lum > 0.62f;
+        layout.darkLogo = lum > 0.62f;
+        st.themeDark = lum < 0.48f;
     }
 
     /** 取一张正好 cw×ch 的复用裁剪位图（尺寸变化才重新分配；条带尺寸逐帧稳定）。 */

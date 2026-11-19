@@ -228,6 +228,12 @@ class ControlPanel {
                 (i, on) -> keepOriginalVideo = on);
         hint(c4, "开启后只尝试硬件与 CPU 软件编解码，绝不降低分辨率；"
                 + "关闭时硬件失败后直接降到 1280 / 864，避免额外等待 CPU 尝试。");
+        final android.content.SharedPreferences videoPrefs =
+                act.getSharedPreferences("vl_video", android.content.Context.MODE_PRIVATE);
+        chips(c4, new String[]{"SurfaceTexture 解码（实验）"},
+                () -> new boolean[]{videoPrefs.getBoolean("surface_decode", false)},
+                (i, on) -> videoPrefs.edit().putBoolean("surface_decode", on).apply());
+        hint(c4, "适用于 SDR H.264，导出诊断中显示实际路径。可在同一视频上比较耗时，失败后自动重试 YUV 流程。");
         slider(c4, "视频水印高度", -4, 14, 0.2f,
                 () -> st.videoGapShift, v -> st.videoGapShift = v,
                 p -> String.format(Locale.US, "%+.1f%%", p));
